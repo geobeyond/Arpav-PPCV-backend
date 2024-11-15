@@ -26,7 +26,6 @@ from .... import (
     database as db,
     operations,
 )
-from ....config import ArpavPpcvSettings
 from ...responses import GeoJsonResponse
 from ....schemas import base
 from ... import dependencies
@@ -126,57 +125,13 @@ def get_station(
     return observations.StationReadListItem.from_db_instance(db_station, request)
 
 
-@router.get("/variables", response_model=observations.VariableList)
-def list_variables(
-    request: Request,
-    db_session: Annotated[Session, Depends(dependencies.get_db_session)],
-    settings: Annotated[ArpavPpcvSettings, Depends(dependencies.get_settings)],
-    list_params: Annotated[dependencies.CommonListFilterParameters, Depends()],
-):
-    """List known variables."""
-    variables, filtered_total = db.list_variables(
-        db_session,
-        limit=list_params.limit,
-        offset=list_params.offset,
-        include_total=True,
-    )
-    _, unfiltered_total = db.list_variables(
-        db_session, limit=1, offset=0, include_total=True
-    )
-    return observations.VariableList.from_items(
-        variables,
-        request,
-        settings,
-        limit=list_params.limit,
-        offset=list_params.offset,
-        filtered_total=filtered_total,
-        unfiltered_total=unfiltered_total,
-    )
-
-
-@router.get(
-    "/variables/{variable_id}",
-    response_model=observations.VariableReadListItem,
-)
-def get_variable(
-    request: Request,
-    db_session: Annotated[Session, Depends(dependencies.get_db_session)],
-    settings: Annotated[ArpavPpcvSettings, Depends(dependencies.get_settings)],
-    variable_id: pydantic.UUID4,
-):
-    db_variable = db.get_variable(db_session, variable_id)
-    return observations.VariableReadListItem.from_db_instance(
-        db_variable, request, settings
-    )
-
-
 @router.get("/monthly-measurements", response_model=observations.MonthlyMeasurementList)
 def list_monthly_measurements(
     request: Request,
     db_session: Annotated[Session, Depends(dependencies.get_db_session)],
     list_params: Annotated[dependencies.CommonListFilterParameters, Depends()],
     station_code: str | None = None,
-    variable_name: str | None = None,
+    climatic_indicator_identifier: str | None = None,
     month: Annotated[int | None, fastapi.Query(le=1, ge=12)] = None,
 ):
     """List known monthly measurements."""
@@ -188,20 +143,22 @@ def list_monthly_measurements(
             raise ValueError("Invalid station code")
     else:
         station_id = None
-    if variable_name is not None:
-        db_variable = db.get_variable_by_name(db_session, variable_name)
-        if db_variable is not None:
-            variable_id = db_variable.id
+    if climatic_indicator_identifier is not None:
+        db_climatic_indicator = db.get_climatic_indicator_by_identifier(
+            db_session, climatic_indicator_identifier
+        )
+        if db_climatic_indicator is not None:
+            climatic_indicator_id = db_climatic_indicator.id
         else:
-            raise ValueError("Invalid variable name")
+            raise ValueError("Invalid climatic indicator identifier")
     else:
-        variable_id = None
+        climatic_indicator_id = None
     monthly_measurements, filtered_total = db.list_monthly_measurements(
         db_session,
         limit=list_params.limit,
         offset=list_params.offset,
         station_id_filter=station_id,
-        variable_id_filter=variable_id,
+        climatic_indicator_id_filter=climatic_indicator_id,
         month_filter=month,
         include_total=True,
     )

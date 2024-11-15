@@ -18,7 +18,7 @@ from .. import exceptions
 from . import base
 
 if TYPE_CHECKING:
-    from . import observations
+    from . import climaticindicators
 
 logger = logging.getLogger(__name__)
 _NAME_PATTERN: Final[str] = r"^[a-z0-9_]+$"
@@ -176,26 +176,13 @@ class CoverageConfiguration(sqlmodel.SQLModel, table=True):
 
     id: uuid.UUID = sqlmodel.Field(default_factory=uuid.uuid4, primary_key=True)
     name: str = sqlmodel.Field(unique=True, index=True)
-    display_name_english: Optional[str] = None
-    display_name_italian: Optional[str] = None
-    description_english: Optional[str] = None
-    description_italian: Optional[str] = None
     netcdf_main_dataset_name: str
     thredds_url_pattern: str
     wms_main_layer_name: Optional[str] = None
     wms_secondary_layer_name: Optional[str] = None
-    unit_english: str = ""
-    unit_italian: Optional[str] = None
-    palette: str
-    color_scale_min: float = 0.0
-    color_scale_max: float = 1.0
-    data_precision: int = 3
-    observation_variable_id: Optional[uuid.UUID] = sqlmodel.Field(
-        default=None, foreign_key="variable.id"
+    climatic_indicator_id: Optional[int] = sqlmodel.Field(
+        default=None, foreign_key="climaticindicator.id"
     )
-    observation_variable_aggregation_type: Optional[
-        base.ObservationAggregationType
-    ] = None
     uncertainty_lower_bounds_coverage_configuration_id: Optional[
         uuid.UUID
     ] = sqlmodel.Field(default=None, foreign_key="coverageconfiguration.id")
@@ -234,10 +221,13 @@ class CoverageConfiguration(sqlmodel.SQLModel, table=True):
             "cascade": "all, delete, delete-orphan",
         },
     )
-
-    related_observation_variable: "observations.Variable" = sqlmodel.Relationship(
+    climatic_indicator: "climaticindicators.ClimaticIndicator" = sqlmodel.Relationship(
         back_populates="related_coverage_configurations"
     )
+
+    # related_observation_variable: "observations.Variable" = sqlmodel.Relationship(
+    #     back_populates="related_coverage_configurations"
+    # )
 
     uncertainty_lower_bounds_coverage_configuration: Optional[
         "CoverageConfiguration"
@@ -279,11 +269,16 @@ class CoverageConfiguration(sqlmodel.SQLModel, table=True):
     @property
     def coverage_id_pattern(self) -> str:
         other_parts = set()
+        legacy_param_names = (
+            "climatological_variable",
+            "measure",
+            "aggregation_period",
+        )
         for pv in self.possible_values:
-            other_parts.add(
-                pv.configuration_parameter_value.configuration_parameter.name
-            )
-        all_parts = ["name"] + sorted(list(other_parts))
+            param_name = pv.configuration_parameter_value.configuration_parameter.name
+            if param_name not in legacy_param_names:
+                other_parts.add(param_name)
+        all_parts = ["name", "climatic_indicator"] + sorted(list(other_parts))
         return "-".join(f"{{{part}}}" for part in all_parts)
 
     @pydantic.computed_field()
@@ -325,7 +320,7 @@ class CoverageConfiguration(sqlmodel.SQLModel, table=True):
         except IndexError as err:
             logger.exception("Could not retrieve used values")
             raise exceptions.InvalidCoverageIdentifierException() from err
-        rendered = template
+        rendered = self.climatic_indicator.render_templated_value(template)
         for used_value in used_values:
             param_name = (
                 used_value.configuration_parameter_value.configuration_parameter.name
@@ -339,21 +334,16 @@ class CoverageConfiguration(sqlmodel.SQLModel, table=True):
     def build_coverage_identifier(
         self, parameters: list[ConfigurationParameterValue]
     ) -> str:
-        id_parts = [self.name]
-        for match_obj in re.finditer(r"(\{\w+\})", self.coverage_id_pattern):
-            param_name = match_obj.group(1)[1:-1]
-            if param_name != "name":
-                for conf_param_value in parameters:
-                    conf_param = conf_param_value.configuration_parameter
-                    if conf_param.name == param_name:
-                        id_parts.append(conf_param_value.name)
-                        break
-                else:
-                    raise ValueError(
-                        f"Could not find suitable value for {param_name!r}"
-                    )
+        id_parts = [self.name, self.climatic_indicator.identifier]
+        for part in self.coverage_id_pattern.split("-")[2:]:
+            param_name = part.translate(str.maketrans("", "", "{}"))
+            for conf_param_value in parameters:
+                conf_param = conf_param_value.configuration_parameter
+                if conf_param.name == param_name:
+                    id_parts.append(conf_param_value.name)
+                    break
             else:
-                continue
+                raise ValueError(f"Could not find suitable value for {param_name!r}")
         return "-".join(id_parts)
 
     def retrieve_used_values(
@@ -378,15 +368,21 @@ class CoverageConfiguration(sqlmodel.SQLModel, table=True):
     def retrieve_configuration_parameters(
         self, coverage_identifier: str
     ) -> dict[str, str]:
-        pattern_parts = re.finditer(
-            r"\{(\w+)\}", self.coverage_id_pattern.partition("-")[-1]
-        )
-        id_parts = coverage_identifier.split("-")[1:]
+        # - first in the coverage identifier is the cov_conf's `name`
+        # - second is the cov conf's climatic_indicator `identifier`
+        # - then we have all the conf params
+        conf_param_name_parts = self.coverage_id_pattern.split("-")[2:]
+
+        # - so, first is the cov_conf.name
+        # - then the next three are the climatic_indicator identifier name parts
+        # - finally, the conf param values
+        conf_param_values = coverage_identifier.split("-")[4:]
+
         result = {}
-        for index, pattern_match_obj in enumerate(pattern_parts):
-            configuration_parameter_name = pattern_match_obj.group(1)
-            id_part = id_parts[index]
-            result[configuration_parameter_name] = id_part
+        for index, param_part in enumerate(conf_param_name_parts):
+            param_name = param_part.translate(str.maketrans("", "", "{}"))
+            result[param_name] = conf_param_values[index]
+
         return result
 
     def get_seasonal_aggregation_query_filter(
@@ -432,27 +428,14 @@ class CoverageConfigurationCreate(sqlmodel.SQLModel):
             ),
         ),
     ]
-    display_name_english: Optional[str] = None
-    display_name_italian: Optional[str] = None
-    description_english: Optional[str] = None
-    description_italian: Optional[str] = None
     netcdf_main_dataset_name: str
     # the point in having a wms_main_layer_name and wms_secondary_layer_name is to let
     # the frontend toggle between them
     wms_main_layer_name: Optional[str] = None
     wms_secondary_layer_name: Optional[str] = None
     thredds_url_pattern: str
-    unit_english: str
-    unit_italian: Optional[str] = None
-    palette: str
-    color_scale_min: float
-    color_scale_max: float
-    data_precision: int = 3
     possible_values: list["ConfigurationParameterPossibleValueCreate"]
-    observation_variable_id: Optional[uuid.UUID] = None
-    observation_variable_aggregation_type: Optional[
-        base.ObservationAggregationType
-    ] = None
+    climatic_indicator_id: int
     uncertainty_lower_bounds_coverage_configuration_id: Optional[uuid.UUID] = None
     uncertainty_upper_bounds_coverage_configuration_id: Optional[uuid.UUID] = None
     secondary_coverage_configurations_ids: Annotated[
@@ -470,24 +453,11 @@ class CoverageConfigurationCreate(sqlmodel.SQLModel):
 
 class CoverageConfigurationUpdate(sqlmodel.SQLModel):
     name: Annotated[Optional[str], pydantic.Field(pattern=_NAME_PATTERN)] = None
-    display_name_english: Optional[str] = None
-    display_name_italian: Optional[str] = None
-    description_english: Optional[str] = None
-    description_italian: Optional[str] = None
     netcdf_main_dataset_name: Optional[str] = None
     wms_main_layer_name: Optional[str] = None
     wms_secondary_layer_name: Optional[str] = None
     thredds_url_pattern: Optional[str] = None
-    unit_english: Optional[str] = None
-    unit_italian: Optional[str] = None
-    palette: Optional[str] = None
-    color_scale_min: Optional[float] = None
-    color_scale_max: Optional[float] = None
-    data_precision: Optional[int] = None
-    observation_variable_id: Optional[uuid.UUID] = None
-    observation_variable_aggregation_type: Optional[
-        base.ObservationAggregationType
-    ] = None
+    climatic_indicator_id: Optional[int] = None
     possible_values: list["ConfigurationParameterPossibleValueUpdate"]
     uncertainty_lower_bounds_coverage_configuration_id: Optional[uuid.UUID] = None
     uncertainty_upper_bounds_coverage_configuration_id: Optional[uuid.UUID] = None
@@ -602,13 +572,6 @@ class CoverageInternal:
 class VariableMenuTreeCombination(TypedDict):
     configuration_parameter: ConfigurationParameter
     values: list[ConfigurationParameterValue]
-
-
-class ForecastVariableMenuTree(TypedDict):
-    climatological_variable: ConfigurationParameterValue
-    aggregation_period: ConfigurationParameterValue
-    measure: ConfigurationParameterValue
-    combinations: dict[str, VariableMenuTreeCombination]
 
 
 class HistoricalVariableMenuTree(TypedDict):

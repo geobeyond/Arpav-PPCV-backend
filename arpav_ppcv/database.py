@@ -2,7 +2,6 @@
 
 import itertools
 import logging
-import re
 import uuid
 from typing import (
     Optional,
@@ -17,12 +16,17 @@ import sqlmodel
 from geoalchemy2.shape import from_shape
 from sqlalchemy import func
 
-from . import config
+from . import (
+    config,
+    exceptions,
+)
 from .schemas import (
     base,
+    climaticindicators,
     coverages,
     municipalities,
     observations,
+    static,
 )
 
 logger = logging.getLogger(__name__)
@@ -59,113 +63,113 @@ def get_engine(settings: config.ArpavPpcvSettings, use_test_db: Optional[bool] =
     return result
 
 
-def create_variable(
-    session: sqlmodel.Session, variable_create: observations.VariableCreate
-) -> observations.Variable:
-    """Create a new variable."""
-    db_variable = observations.Variable(**variable_create.model_dump())
-    session.add(db_variable)
-    try:
-        session.commit()
-    except sqlalchemy.exc.DBAPIError:
-        raise
-    else:
-        session.refresh(db_variable)
-        return db_variable
-
-
-def create_many_variables(
-    session: sqlmodel.Session,
-    variables_to_create: Sequence[observations.VariableCreate],
-) -> list[observations.Variable]:
-    """Create several variables."""
-    db_records = []
-    for variable_create in variables_to_create:
-        db_variable = observations.Variable(**variable_create.model_dump())
-        db_records.append(db_variable)
-        session.add(db_variable)
-    try:
-        session.commit()
-    except sqlalchemy.exc.DBAPIError:
-        raise
-    else:
-        for db_record in db_records:
-            session.refresh(db_record)
-        return db_records
-
-
-def get_variable(
-    session: sqlmodel.Session, variable_id: uuid.UUID
-) -> Optional[observations.Variable]:
-    return session.get(observations.Variable, variable_id)
-
-
-def get_variable_by_name(
-    session: sqlmodel.Session, variable_name: str
-) -> Optional[observations.Variable]:
-    """Get a variable by its name.
-
-    Since a variable name is unique, it can be used to uniquely identify a variable.
-    """
-    return session.exec(
-        sqlmodel.select(observations.Variable).where(
-            observations.Variable.name == variable_name
-        )
-    ).first()
-
-
-def update_variable(
-    session: sqlmodel.Session,
-    db_variable: observations.Variable,
-    variable_update: observations.VariableUpdate,
-) -> observations.Variable:
-    """Update a variable."""
-    data_ = variable_update.model_dump(exclude_unset=True)
-    for key, value in data_.items():
-        setattr(db_variable, key, value)
-    session.add(db_variable)
-    session.commit()
-    session.refresh(db_variable)
-    return db_variable
-
-
-def delete_variable(session: sqlmodel.Session, variable_id: uuid.UUID) -> None:
-    """Delete a variable."""
-    db_variable = get_variable(session, variable_id)
-    if db_variable is not None:
-        session.delete(db_variable)
-        session.commit()
-    else:
-        raise RuntimeError("Variable not found")
-
-
-def list_variables(
-    session: sqlmodel.Session,
-    *,
-    limit: int = 20,
-    offset: int = 0,
-    include_total: bool = False,
-    name_filter: Optional[str] = None,
-) -> tuple[Sequence[observations.Variable], Optional[int]]:
-    """List existing variables."""
-    statement = sqlmodel.select(observations.Variable).order_by(
-        observations.Variable.name
-    )
-    if name_filter is not None:
-        statement = _add_substring_filter(
-            statement, name_filter, observations.Variable.name
-        )
-    items = session.exec(statement.offset(offset).limit(limit)).all()
-    num_items = _get_total_num_records(session, statement) if include_total else None
-    return items, num_items
-
-
-def collect_all_variables(
-    session: sqlmodel.Session,
-) -> Sequence[observations.Variable]:
-    _, num_total = list_variables(session, limit=1, include_total=True)
-    result, _ = list_variables(session, limit=num_total, include_total=False)
-    return result
+# def create_variable(
+#     session: sqlmodel.Session, variable_create: observations.VariableCreate
+# ) -> observations.Variable:
+#     """Create a new variable."""
+#     db_variable = observations.Variable(**variable_create.model_dump())
+#     session.add(db_variable)
+#     try:
+#         session.commit()
+#     except sqlalchemy.exc.DBAPIError:
+#         raise
+#     else:
+#         session.refresh(db_variable)
+#         return db_variable
+#
+#
+# def create_many_variables(
+#     session: sqlmodel.Session,
+#     variables_to_create: Sequence[observations.VariableCreate],
+# ) -> list[observations.Variable]:
+#     """Create several variables."""
+#     db_records = []
+#     for variable_create in variables_to_create:
+#         db_variable = observations.Variable(**variable_create.model_dump())
+#         db_records.append(db_variable)
+#         session.add(db_variable)
+#     try:
+#         session.commit()
+#     except sqlalchemy.exc.DBAPIError:
+#         raise
+#     else:
+#         for db_record in db_records:
+#             session.refresh(db_record)
+#         return db_records
+#
+#
+# def get_variable(
+#     session: sqlmodel.Session, variable_id: uuid.UUID
+# ) -> Optional[observations.Variable]:
+#     return session.get(observations.Variable, variable_id)
+#
+#
+# def get_variable_by_name(
+#     session: sqlmodel.Session, variable_name: str
+# ) -> Optional[observations.Variable]:
+#     """Get a variable by its name.
+#
+#     Since a variable name is unique, it can be used to uniquely identify a variable.
+#     """
+#     return session.exec(
+#         sqlmodel.select(observations.Variable).where(
+#             observations.Variable.name == variable_name
+#         )
+#     ).first()
+#
+#
+# def update_variable(
+#     session: sqlmodel.Session,
+#     db_variable: observations.Variable,
+#     variable_update: observations.VariableUpdate,
+# ) -> observations.Variable:
+#     """Update a variable."""
+#     data_ = variable_update.model_dump(exclude_unset=True)
+#     for key, value in data_.items():
+#         setattr(db_variable, key, value)
+#     session.add(db_variable)
+#     session.commit()
+#     session.refresh(db_variable)
+#     return db_variable
+#
+#
+# def delete_variable(session: sqlmodel.Session, variable_id: uuid.UUID) -> None:
+#     """Delete a variable."""
+#     db_variable = get_variable(session, variable_id)
+#     if db_variable is not None:
+#         session.delete(db_variable)
+#         session.commit()
+#     else:
+#         raise RuntimeError("Variable not found")
+#
+#
+# def list_variables(
+#     session: sqlmodel.Session,
+#     *,
+#     limit: int = 20,
+#     offset: int = 0,
+#     include_total: bool = False,
+#     name_filter: Optional[str] = None,
+# ) -> tuple[Sequence[observations.Variable], Optional[int]]:
+#     """List existing variables."""
+#     statement = sqlmodel.select(observations.Variable).order_by(
+#         observations.Variable.name
+#     )
+#     if name_filter is not None:
+#         statement = _add_substring_filter(
+#             statement, name_filter, observations.Variable.name
+#         )
+#     items = session.exec(statement.offset(offset).limit(limit)).all()
+#     num_items = _get_total_num_records(session, statement) if include_total else None
+#     return items, num_items
+#
+#
+# def collect_all_variables(
+#     session: sqlmodel.Session,
+# ) -> Sequence[observations.Variable]:
+#     _, num_total = list_variables(session, limit=1, include_total=True)
+#     result, _ = list_variables(session, limit=num_total, include_total=False)
+#     return result
 
 
 def create_station(
@@ -413,7 +417,7 @@ def list_monthly_measurements(
     limit: int = 20,
     offset: int = 0,
     station_id_filter: Optional[uuid.UUID] = None,
-    variable_id_filter: Optional[uuid.UUID] = None,
+    climatic_indicator_id_filter: Optional[int] = None,
     month_filter: Optional[int] = None,
     include_total: bool = False,
 ) -> tuple[Sequence[observations.MonthlyMeasurement], Optional[int]]:
@@ -425,9 +429,10 @@ def list_monthly_measurements(
         statement = statement.where(
             observations.MonthlyMeasurement.station_id == station_id_filter
         )
-    if variable_id_filter is not None:
+    if climatic_indicator_id_filter is not None:
         statement = statement.where(
-            observations.MonthlyMeasurement.variable_id == variable_id_filter
+            observations.MonthlyMeasurement.climatic_indicator_id
+            == climatic_indicator_id_filter
         )
     if month_filter is not None:
         statement = statement.where(
@@ -443,14 +448,14 @@ def collect_all_monthly_measurements(
     session: sqlmodel.Session,
     *,
     station_id_filter: Optional[uuid.UUID] = None,
-    variable_id_filter: Optional[uuid.UUID] = None,
+    climatic_indicator_id_filter: Optional[int] = None,
     month_filter: Optional[int] = None,
 ) -> Sequence[observations.MonthlyMeasurement]:
     _, num_total = list_monthly_measurements(
         session,
         limit=1,
         station_id_filter=station_id_filter,
-        variable_id_filter=variable_id_filter,
+        climatic_indicator_id_filter=climatic_indicator_id_filter,
         month_filter=month_filter,
         include_total=True,
     )
@@ -458,7 +463,7 @@ def collect_all_monthly_measurements(
         session,
         limit=num_total,
         station_id_filter=station_id_filter,
-        variable_id_filter=variable_id_filter,
+        climatic_indicator_id_filter=climatic_indicator_id_filter,
         month_filter=month_filter,
         include_total=False,
     )
@@ -527,7 +532,7 @@ def list_seasonal_measurements(
     limit: int = 20,
     offset: int = 0,
     station_id_filter: Optional[uuid.UUID] = None,
-    variable_id_filter: Optional[uuid.UUID] = None,
+    climatic_indicator_id_filter: Optional[int] = None,
     season_filter: Optional[base.Season] = None,
     include_total: bool = False,
 ) -> tuple[Sequence[observations.SeasonalMeasurement], Optional[int]]:
@@ -539,9 +544,10 @@ def list_seasonal_measurements(
         statement = statement.where(
             observations.SeasonalMeasurement.station_id == station_id_filter
         )
-    if variable_id_filter is not None:
+    if climatic_indicator_id_filter is not None:
         statement = statement.where(
-            observations.SeasonalMeasurement.variable_id == variable_id_filter
+            observations.SeasonalMeasurement.climatic_indicator_id
+            == climatic_indicator_id_filter
         )
     if season_filter is not None:
         statement = statement.where(
@@ -556,14 +562,14 @@ def collect_all_seasonal_measurements(
     session: sqlmodel.Session,
     *,
     station_id_filter: Optional[uuid.UUID] = None,
-    variable_id_filter: Optional[uuid.UUID] = None,
+    climatic_indicator_id_filter: Optional[int] = None,
     season_filter: Optional[base.Season] = None,
 ) -> Sequence[observations.SeasonalMeasurement]:
     _, num_total = list_seasonal_measurements(
         session,
         limit=1,
         station_id_filter=station_id_filter,
-        variable_id_filter=variable_id_filter,
+        climatic_indicator_id_filter=climatic_indicator_id_filter,
         season_filter=season_filter,
         include_total=True,
     )
@@ -571,7 +577,7 @@ def collect_all_seasonal_measurements(
         session,
         limit=num_total,
         station_id_filter=station_id_filter,
-        variable_id_filter=variable_id_filter,
+        climatic_indicator_id_filter=climatic_indicator_id_filter,
         season_filter=season_filter,
         include_total=False,
     )
@@ -639,7 +645,7 @@ def list_yearly_measurements(
     limit: int = 20,
     offset: int = 0,
     station_id_filter: Optional[uuid.UUID] = None,
-    variable_id_filter: Optional[uuid.UUID] = None,
+    climatic_indicator_id_filter: Optional[int] = None,
     include_total: bool = False,
 ) -> tuple[Sequence[observations.YearlyMeasurement], Optional[int]]:
     """List existing yearly measurements."""
@@ -650,9 +656,10 @@ def list_yearly_measurements(
         statement = statement.where(
             observations.YearlyMeasurement.station_id == station_id_filter
         )
-    if variable_id_filter is not None:
+    if climatic_indicator_id_filter is not None:
         statement = statement.where(
-            observations.YearlyMeasurement.variable_id == variable_id_filter
+            observations.YearlyMeasurement.climatic_indicator_id
+            == climatic_indicator_id_filter
         )
     items = session.exec(statement.offset(offset).limit(limit)).all()
     num_items = _get_total_num_records(session, statement) if include_total else None
@@ -663,20 +670,20 @@ def collect_all_yearly_measurements(
     session: sqlmodel.Session,
     *,
     station_id_filter: Optional[uuid.UUID] = None,
-    variable_id_filter: Optional[uuid.UUID] = None,
+    climatic_indicator_id_filter: Optional[int] = None,
 ) -> Sequence[observations.YearlyMeasurement]:
     _, num_total = list_yearly_measurements(
         session,
         limit=1,
         station_id_filter=station_id_filter,
-        variable_id_filter=variable_id_filter,
+        climatic_indicator_id_filter=climatic_indicator_id_filter,
         include_total=True,
     )
     result, _ = list_yearly_measurements(
         session,
         limit=num_total,
         station_id_filter=station_id_filter,
-        variable_id_filter=variable_id_filter,
+        climatic_indicator_id_filter=climatic_indicator_id_filter,
         include_total=False,
     )
     return result
@@ -943,31 +950,35 @@ def list_coverage_configurations(
     offset: int = 0,
     include_total: bool = False,
     name_filter: Optional[str] = None,
-    english_display_name_filter: Optional[str] = None,
-    italian_display_name_filter: Optional[str] = None,
     configuration_parameter_values_filter: Optional[
         list[coverages.ConfigurationParameterValue]
     ] = None,
+    climatic_indicator_filter: Optional[climaticindicators.ClimaticIndicator] = None,
 ) -> tuple[Sequence[coverages.CoverageConfiguration], Optional[int]]:
     """List existing coverage configurations."""
     statement = sqlmodel.select(coverages.CoverageConfiguration).order_by(
         coverages.CoverageConfiguration.name
     )
+    if climatic_indicator_filter is None:
+        (
+            configuration_parameter_values_filter,
+            climatic_indicator_filter,
+        ) = _replace_conf_param_filters_with_climatic_indicator(
+            session, configuration_parameter_values_filter or []
+        )
+        if climatic_indicator_filter is not None:
+            statement = statement.where(
+                coverages.CoverageConfiguration.climatic_indicator_id
+                == climatic_indicator_filter.id
+            )
+    else:
+        statement = statement.where(
+            coverages.CoverageConfiguration.climatic_indicator_id
+            == climatic_indicator_filter.id
+        )
     if name_filter is not None:
         statement = _add_substring_filter(
             statement, name_filter, coverages.CoverageConfiguration.name
-        )
-    if english_display_name_filter is not None:
-        statement = _add_substring_filter(
-            statement,
-            english_display_name_filter,
-            coverages.CoverageConfiguration.display_name_english,
-        )
-    if italian_display_name_filter is not None:
-        statement = _add_substring_filter(
-            statement,
-            italian_display_name_filter,
-            coverages.CoverageConfiguration.display_name_italian,
         )
     if len(conf_params := configuration_parameter_values_filter or []) > 0:
         possible_values_cte = (
@@ -1027,29 +1038,26 @@ def list_coverage_configurations(
 def collect_all_coverage_configurations(
     session: sqlmodel.Session,
     name_filter: Optional[str] = None,
-    english_display_name_filter: Optional[str] = None,
-    italian_display_name_filter: Optional[str] = None,
     configuration_parameter_values_filter: Optional[
         list[coverages.ConfigurationParameterValue]
     ] = None,
+    climatic_indicator_filter: Optional[climaticindicators.ClimaticIndicator] = None,
 ) -> Sequence[coverages.CoverageConfiguration]:
     _, num_total = list_coverage_configurations(
         session,
         limit=1,
         include_total=True,
         name_filter=name_filter,
-        english_display_name_filter=english_display_name_filter,
-        italian_display_name_filter=italian_display_name_filter,
         configuration_parameter_values_filter=configuration_parameter_values_filter,
+        climatic_indicator_filter=climatic_indicator_filter,
     )
     result, _ = list_coverage_configurations(
         session,
         limit=num_total,
         include_total=False,
         name_filter=name_filter,
-        english_display_name_filter=english_display_name_filter,
-        italian_display_name_filter=italian_display_name_filter,
         configuration_parameter_values_filter=configuration_parameter_values_filter,
+        climatic_indicator_filter=climatic_indicator_filter,
     )
     return result
 
@@ -1061,25 +1069,11 @@ def create_coverage_configuration(
     to_refresh = []
     db_coverage_configuration = coverages.CoverageConfiguration(
         name=coverage_configuration_create.name,
-        display_name_english=coverage_configuration_create.display_name_english,
-        display_name_italian=coverage_configuration_create.display_name_italian,
-        description_english=coverage_configuration_create.description_english,
-        description_italian=coverage_configuration_create.description_italian,
         netcdf_main_dataset_name=coverage_configuration_create.netcdf_main_dataset_name,
         wms_main_layer_name=coverage_configuration_create.wms_main_layer_name,
         wms_secondary_layer_name=coverage_configuration_create.wms_secondary_layer_name,
         thredds_url_pattern=coverage_configuration_create.thredds_url_pattern,
-        unit_english=coverage_configuration_create.unit_english,
-        unit_italian=(
-            coverage_configuration_create.unit_italian
-            or coverage_configuration_create.unit_english
-        ),
-        palette=coverage_configuration_create.palette,
-        color_scale_min=coverage_configuration_create.color_scale_min,
-        color_scale_max=coverage_configuration_create.color_scale_max,
-        data_precision=coverage_configuration_create.data_precision,
-        observation_variable_id=coverage_configuration_create.observation_variable_id,
-        observation_variable_aggregation_type=coverage_configuration_create.observation_variable_aggregation_type,
+        climatic_indicator_id=coverage_configuration_create.climatic_indicator_id,
         uncertainty_lower_bounds_coverage_configuration_id=(
             coverage_configuration_create.uncertainty_lower_bounds_coverage_configuration_id
         ),
@@ -1226,20 +1220,18 @@ def generate_coverage_identifiers(
     ] = None,
 ) -> list[str]:
     """Build list of legal coverage identifiers for a coverage configuration."""
-
     params_to_filter = {}
     for cpv in configuration_parameter_values_filter or []:
         values = params_to_filter.setdefault(cpv.configuration_parameter.name, [])
         values.append(cpv.name)
-    pattern_parts = re.findall(
-        r"\{(\w+)\}", coverage_configuration.coverage_id_pattern.partition("-")[-1]
-    )
+    conf_param_id_parts = coverage_configuration.coverage_id_pattern.split("-")[2:]
     values_to_combine = []
-    for part in pattern_parts:
+    for part in conf_param_id_parts:
+        param_name = part.translate(str.maketrans("", "", "{}"))
         part_values = []
         for possible_value in coverage_configuration.possible_values:
             this_param_name = possible_value.configuration_parameter_value.configuration_parameter.name
-            if this_param_name == part:
+            if this_param_name == param_name:
                 # check if this param's value is to be filtered out or not
                 this_value = possible_value.configuration_parameter_value.name
                 if this_param_name in params_to_filter:
@@ -1248,14 +1240,16 @@ def generate_coverage_identifiers(
                 else:
                     part_values.append(this_value)
         values_to_combine.append(part_values)
-    # account for the possibility that there is an error in the
-    # coverage_id_pattern, where some of the parts are not actually configured
+
     allowed_identifiers = []
-    for index, container in enumerate(values_to_combine):
-        if len(container) == 0:
-            values_to_combine[index] = [pattern_parts[index]]
     for combination in itertools.product(*values_to_combine):
-        dataset_id = "-".join((coverage_configuration.name, *combination))
+        dataset_id = "-".join(
+            (
+                coverage_configuration.name,
+                coverage_configuration.climatic_indicator.identifier,
+                *combination,
+            )
+        )
         allowed_identifiers.append(dataset_id)
     return allowed_identifiers
 
@@ -1420,8 +1414,11 @@ def list_coverage_identifiers(
     configuration_parameter_values_filter: Optional[
         list[coverages.ConfigurationParameterValue]
     ] = None,
+    climatic_indicator_filter: Optional[climaticindicators.ClimaticIndicator] = None,
 ) -> tuple[list[coverages.CoverageInternal], Optional[int]]:
-    all_covs = collect_all_coverages(session, configuration_parameter_values_filter)
+    all_covs = collect_all_coverages(
+        session, configuration_parameter_values_filter, climatic_indicator_filter
+    )
     if name_filter is not None:
         for fragment in name_filter:
             all_covs = [c for c in all_covs if fragment.lower() in c.identifier.lower()]
@@ -1436,10 +1433,12 @@ def collect_all_coverages(
     configuration_parameter_values_filter: Optional[
         list[coverages.ConfigurationParameterValue]
     ] = None,
+    climatic_indicator_filter: Optional[climaticindicators.ClimaticIndicator] = None,
 ) -> list[coverages.CoverageInternal]:
     cov_confs = collect_all_coverage_configurations(
         session,
         configuration_parameter_values_filter=configuration_parameter_values_filter,
+        climatic_indicator_filter=climatic_indicator_filter,
     )
     cov_ids = []
     for cov_conf in cov_confs:
@@ -1515,6 +1514,141 @@ def ensure_uncertainty_type_configuration_parameters_exist(
     return lower_bound_value, upper_bound_value
 
 
+def get_climatic_indicator(
+    session: sqlmodel.Session, climatic_indicator_id: int
+) -> Optional[climaticindicators.ClimaticIndicator]:
+    return session.get(climaticindicators.ClimaticIndicator, climatic_indicator_id)
+
+
+def get_climatic_indicator_by_identifier(
+    session: sqlmodel.Session, climatic_indicator_identifier: str
+) -> Optional[climaticindicators.ClimaticIndicator]:
+    try:
+        name, raw_measure, raw_aggregation_period = climatic_indicator_identifier.split(
+            "-"
+        )
+        measure_type = static.MeasureType(raw_measure.upper())
+        aggregation_period = static.AggregationPeriod(raw_aggregation_period.upper())
+    except ValueError:
+        raise exceptions.InvalidClimaticIndicatorIdentifierError()
+    else:
+        statement = sqlmodel.select(climaticindicators.ClimaticIndicator).where(
+            climaticindicators.ClimaticIndicator.name == name,
+            climaticindicators.ClimaticIndicator.measure_type == measure_type,
+            climaticindicators.ClimaticIndicator.aggregation_period
+            == aggregation_period,
+        )
+        return session.exec(statement).first()
+
+
+def list_climatic_indicators(
+    session: sqlmodel.Session,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    include_total: bool = False,
+    name_filter: str | None = None,
+    measure_type_filter: str | None = None,
+    aggregation_period_filter: str | None = None,
+) -> tuple[Sequence[climaticindicators.ClimaticIndicator], Optional[int]]:
+    """List existing climatic indicators."""
+    statement = sqlmodel.select(climaticindicators.ClimaticIndicator).order_by(
+        climaticindicators.ClimaticIndicator.sort_order,
+        climaticindicators.ClimaticIndicator.name,
+        climaticindicators.ClimaticIndicator.aggregation_period,
+        climaticindicators.ClimaticIndicator.measure_type,
+    )
+    if name_filter is not None:
+        statement = _add_substring_filter(
+            statement, name_filter, climaticindicators.ClimaticIndicator.name
+        )
+    if measure_type_filter is not None:
+        statement = _add_substring_filter(
+            statement,
+            measure_type_filter,
+            climaticindicators.ClimaticIndicator.measure_type,
+        )
+    if aggregation_period_filter is not None:
+        statement = _add_substring_filter(
+            statement,
+            aggregation_period_filter,
+            climaticindicators.ClimaticIndicator.aggregation_period,
+        )
+    items = session.exec(statement.offset(offset).limit(limit)).all()
+    num_items = _get_total_num_records(session, statement) if include_total else None
+    return items, num_items
+
+
+def collect_all_climatic_indicators(
+    session: sqlmodel.Session,
+    name_filter: Optional[str] = None,
+    measure_type_filter: str | None = None,
+    aggregation_period_filter: str | None = None,
+) -> Sequence[climaticindicators.ClimaticIndicator]:
+    _, num_total = list_climatic_indicators(
+        session,
+        limit=1,
+        include_total=True,
+        name_filter=name_filter,
+        measure_type_filter=measure_type_filter,
+        aggregation_period_filter=aggregation_period_filter,
+    )
+    result, _ = list_climatic_indicators(
+        session,
+        limit=num_total,
+        include_total=False,
+        name_filter=name_filter,
+        measure_type_filter=measure_type_filter,
+        aggregation_period_filter=aggregation_period_filter,
+    )
+    return result
+
+
+def create_climatic_indicator(
+    session: sqlmodel.Session,
+    climatic_indicator_create: climaticindicators.ClimaticIndicatorCreate,
+) -> climaticindicators.ClimaticIndicator:
+    """Create a new climatic indicator."""
+    db_climatic_indicator = climaticindicators.ClimaticIndicator(
+        **climatic_indicator_create.model_dump(),
+    )
+    session.add(db_climatic_indicator)
+    try:
+        session.commit()
+    except sqlalchemy.exc.DBAPIError:
+        raise
+    else:
+        session.refresh(db_climatic_indicator)
+        return db_climatic_indicator
+
+
+def update_climatic_indicator(
+    session: sqlmodel.Session,
+    db_climatic_indicator: climaticindicators.ClimaticIndicator,
+    climatic_indicator_update: climaticindicators.ClimaticIndicatorUpdate,
+) -> climaticindicators.ClimaticIndicator:
+    """Update a climatic indicator."""
+    data_ = climatic_indicator_update.model_dump(exclude_unset=True)
+    for key, value in data_.items():
+        setattr(db_climatic_indicator, key, value)
+    session.add(db_climatic_indicator)
+    session.commit()
+    session.refresh(db_climatic_indicator)
+    return db_climatic_indicator
+
+
+def delete_climatic_indicator(
+    session: sqlmodel.Session, climatic_indicator_id: int
+) -> None:
+    """Delete a climatic indicator."""
+    db_indicator = get_climatic_indicator(session, climatic_indicator_id)
+    if db_indicator is not None:
+        session.delete(db_indicator)
+        session.commit()
+    else:
+        raise exceptions.InvalidClimaticIndicatorIdError()
+
+
 def _get_total_num_records(session: sqlmodel.Session, statement):
     return session.exec(
         sqlmodel.select(sqlmodel.func.count()).select_from(statement)
@@ -1537,3 +1671,41 @@ def _slugify_internal_value(value: str) -> str:
     """Replace characters in input string in to make it usable as a name."""
     to_translate = "-\, '"
     return value.translate(value.maketrans(to_translate, "_" * len(to_translate)))
+
+
+def _replace_conf_param_filters_with_climatic_indicator(
+    session: sqlmodel.Session,
+    possible_values: list[coverages.ConfigurationParameterValue],
+) -> tuple[
+    list[coverages.ConfigurationParameterValue],
+    Optional[climaticindicators.ClimaticIndicator],
+]:
+    """Tries to extract a `ClimaticIndicator` instance from the input list.
+
+    This function is intended only for compatibility purposes.
+    """
+    raw_name = None
+    raw_measure_type = None
+    raw_aggregation_period = None
+    new_possible_values = []
+    for possible in possible_values:
+        param_name = possible.configuration_parameter.name
+        logger.debug(f"{param_name=}")
+        if param_name == "climatological_variable":
+            raw_name = possible.name
+        elif param_name == "measure":
+            raw_measure_type = possible.name
+        elif param_name == "aggregation_period":
+            raw_aggregation_period = {"30yr": "thirty_year"}.get(
+                possible.name, possible.name
+            )
+        else:
+            new_possible_values.append(possible)
+    result = (possible_values, None)
+    if all((raw_name, raw_measure_type, raw_aggregation_period)):
+        climatic_indicator = get_climatic_indicator_by_identifier(
+            session, f"{raw_name}-{raw_measure_type}-{raw_aggregation_period}"
+        )
+        if climatic_indicator is not None:
+            result = (new_possible_values, climatic_indicator)
+    return result

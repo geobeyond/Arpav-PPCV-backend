@@ -5,6 +5,7 @@ from xml.etree import ElementTree as et
 from typing import (
     Annotated,
     Optional,
+    Sequence,
 )
 
 import anyio.to_thread
@@ -37,10 +38,11 @@ from ....thredds import (
     utils as thredds_utils,
 )
 from ....schemas.base import (
-    CoreConfParamName,
     CoverageDataSmoothingStrategy,
     ObservationDataSmoothingStrategy,
 )
+from ....schemas.coverages import ConfigurationParameterValue
+from ....schemas.climaticindicators import ClimaticIndicator
 from ... import dependencies
 from ..schemas import coverages as coverage_schemas
 from ..schemas.base import (
@@ -139,24 +141,16 @@ def list_coverage_configurations(
     endpoint.
 
     """
-    conf_param_values_filter = []
-    for possible in possible_value or []:
-        param_name, param_value = possible.partition(":")[::2]
-        db_parameter_value = db.get_configuration_parameter_value_by_names(
-            db_session, param_name, param_value
-        )
-        if db_parameter_value is not None:
-            conf_param_values_filter.append(db_parameter_value)
-        else:
-            logger.debug(
-                f"ignoring unknown parameter/value pair {param_name}:{param_value}"
-            )
+    conf_param_values_filter, climatic_indicator = _retrieve_climatic_indicator_filter(
+        db_session, possible_value or []
+    )
     coverage_configurations, filtered_total = db.list_coverage_configurations(
         db_session,
         limit=list_params.limit,
         offset=list_params.offset,
         include_total=True,
-        configuration_parameter_values_filter=conf_param_values_filter or None,
+        configuration_parameter_values_filter=conf_param_values_filter,
+        climatic_indicator_filter=climatic_indicator,
     )
     _, unfiltered_total = db.list_coverage_configurations(
         db_session, limit=1, offset=0, include_total=True
@@ -234,25 +228,17 @@ def list_coverage_identifiers(
         Query(),
     ] = None,
 ):
-    conf_param_values_filter = []
-    for possible in possible_value or []:
-        param_name, param_value = possible.partition(":")[::2]
-        db_parameter_value = db.get_configuration_parameter_value_by_names(
-            db_session, param_name, param_value
-        )
-        if db_parameter_value is not None:
-            conf_param_values_filter.append(db_parameter_value)
-        else:
-            logger.debug(
-                f"ignoring unknown parameter/value pair {param_name}:{param_value}"
-            )
+    conf_param_values_filter, climatic_indicator = _retrieve_climatic_indicator_filter(
+        db_session, possible_value or []
+    )
     cov_internals, filtered_total = db.list_coverage_identifiers(
         db_session,
         limit=list_params.limit,
         offset=list_params.offset,
         include_total=True,
         name_filter=name_contains,
-        configuration_parameter_values_filter=conf_param_values_filter or None,
+        configuration_parameter_values_filter=conf_param_values_filter,
+        climatic_indicator_filter=climatic_indicator,
     )
     _, unfiltered_total = db.list_coverage_identifiers(
         db_session, limit=1, offset=0, include_total=True
@@ -321,10 +307,10 @@ async def wms_endpoint(
         if query_params.get("request") in ("GetMap", "GetLegendGraphic"):
             query_params = thredds_utils.tweak_wms_get_map_request(
                 query_params,
-                ncwms_palette=cov.configuration.palette,
+                ncwms_palette=cov.configuration.climatic_indicator.palette,
                 ncwms_color_scale_range=(
-                    cov.configuration.color_scale_min,
-                    cov.configuration.color_scale_max,
+                    cov.configuration.climatic_indicator.color_scale_min,
+                    cov.configuration.climatic_indicator.color_scale_max,
                 ),
                 uncertainty_visualization_scale_range=(
                     settings.thredds_server.uncertainty_visualization_scale_range
@@ -671,22 +657,15 @@ def get_forecast_variable_combinations(
 ):
     variable_combinations = operations.get_forecast_variable_parameters(db_session)
     var_combinations = []
-    for var_menu in variable_combinations.values():
-        variable_sort_order = (
-            var_menu[CoreConfParamName.CLIMATOLOGICAL_VARIABLE.value].sort_order or 0
-        )
-        aggregation_period_sort_order = (
-            var_menu[CoreConfParamName.AGGREGATION_PERIOD.value].sort_order or 0
-        )
-        measure_sort_order = (
-            var_menu[CoreConfParamName.MEASURE.value].sort_order or 0,
-        )
+    for climatic_indicator, param_combinations in variable_combinations.items():
         var_combinations.append(
             (
-                variable_sort_order,
-                aggregation_period_sort_order,
-                measure_sort_order,
-                coverage_schemas.ForecastVariableCombinations.from_items(var_menu),
+                climatic_indicator.sort_order,
+                climatic_indicator.aggregation_period.get_sort_order(),
+                climatic_indicator.measure_type.get_sort_order(),
+                coverage_schemas.ForecastVariableCombinations.from_items(
+                    climatic_indicator, param_combinations
+                ),
             )
         )
     var_combinations.sort(key=itemgetter(0, 1, 2))
@@ -694,39 +673,42 @@ def get_forecast_variable_combinations(
     return coverage_schemas.ForecastVariableCombinationsList(
         combinations=var_combinations,
         translations=coverage_schemas.ForecastMenuTranslations.from_items(
-            list(variable_combinations.values())
+            variable_combinations
         ),
     )
 
 
-@router.get(
-    "/historical-variable-combinations",
-    response_model=coverage_schemas.HistoricalVariableCombinationsList,
-)
-def get_historical_variable_combinations(
-    db_session: Annotated[Session, Depends(dependencies.get_db_session)],
-):
-    variable_combinations = operations.get_historical_variable_parameters(db_session)
-    var_combinations = []
-    for var_menu in variable_combinations.values():
-        variable_sort_order = (
-            var_menu[CoreConfParamName.HISTORICAL_VARIABLE.value].sort_order or 0
-        )
-        aggregation_period_sort_order = (
-            var_menu[CoreConfParamName.AGGREGATION_PERIOD.value].sort_order or 0
-        )
-        var_combinations.append(
-            (
-                variable_sort_order,
-                aggregation_period_sort_order,
-                coverage_schemas.HistoricalVariableCombinations.from_items(var_menu),
+def _retrieve_climatic_indicator_filter(
+    session: Session, configuration_parameter_values: Sequence[str]
+) -> tuple[Optional[list[ConfigurationParameterValue]], Optional[ClimaticIndicator]]:
+    conf_param_values_filter = []
+    climatic_indicator_parts = {}
+    for possible in configuration_parameter_values:
+        param_name, param_value = possible.partition(":")[::2]
+        if param_name in ("climatological_variable", "measure", "aggregation_period"):
+            climatic_indicator_parts[param_name] = param_value
+        else:
+            db_parameter_value = db.get_configuration_parameter_value_by_names(
+                session, param_name, param_value
             )
+            if db_parameter_value is not None:
+                conf_param_values_filter.append(db_parameter_value)
+            else:
+                logger.debug(
+                    f"ignoring unknown parameter/value pair {param_name}:{param_value}"
+                )
+    climatic_indicator_id = "-".join(
+        (
+            climatic_indicator_parts.get("climatological_variable", ""),
+            climatic_indicator_parts.get("measure", ""),
+            climatic_indicator_parts.get("aggregation_period", ""),
         )
-    var_combinations.sort(key=itemgetter(0, 1))
-    var_combinations = [vc[2] for vc in var_combinations]
-    return coverage_schemas.HistoricalVariableCombinationsList(
-        combinations=var_combinations,
-        translations=coverage_schemas.HistoricalMenuTranslations.from_items(
-            list(variable_combinations.values())
-        ),
     )
+    try:
+        climatic_indicator = db.get_climatic_indicator_by_identifier(
+            session, climatic_indicator_id
+        )
+    except exceptions.InvalidClimaticIndicatorIdentifierError as err:
+        logger.debug(str(err))
+        climatic_indicator = None
+    return conf_param_values_filter or None, climatic_indicator

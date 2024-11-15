@@ -324,10 +324,10 @@ class CoverageConfigurationView(ModelView):
     fields = (
         fields.UuidField("id"),
         starlette_admin.StringField("name", required=True),
-        starlette_admin.StringField("display_name_english", required=True),
-        starlette_admin.StringField("display_name_italian", required=True),
-        starlette_admin.StringField("description_english"),
-        starlette_admin.StringField("description_italian"),
+        # starlette_admin.StringField("display_name_english", required=True),
+        # starlette_admin.StringField("display_name_italian", required=True),
+        # starlette_admin.StringField("description_english"),
+        # starlette_admin.StringField("description_italian"),
         starlette_admin.StringField(
             "netcdf_main_dataset_name",
             required=True,
@@ -356,24 +356,29 @@ class CoverageConfigurationView(ModelView):
             ),
         ),
         starlette_admin.StringField("coverage_id_pattern", disabled=True),
-        starlette_admin.StringField("unit_english", required=True),
-        starlette_admin.StringField("unit_italian", required=True),
-        starlette_admin.StringField(
-            "palette",
+        # starlette_admin.StringField("unit_english", required=True),
+        # starlette_admin.StringField("unit_italian", required=True),
+        # starlette_admin.StringField(
+        #     "palette",
+        #     required=True,
+        #     help_text=(
+        #         "Name of the palette that should used by the THREDDS WMS server. "
+        #         "Available values can be found at https://reading-escience-centre.gitbooks.io/ncwms-user-guide/content/04-usage.html#getmap"
+        #     ),
+        # ),
+        # starlette_admin.FloatField("color_scale_min", required=True),
+        # starlette_admin.FloatField("color_scale_max", required=True),
+        # starlette_admin.IntegerField(
+        #     "data_precision",
+        #     required=True,
+        #     help_text=(
+        #         "Number of decimal places to be used when displaying data values"
+        #     ),
+        # ),
+        fields.RelatedClimaticIndicatorField(
+            "climatic_indicator",
+            help_text="Related climatic indicator",
             required=True,
-            help_text=(
-                "Name of the palette that should used by the THREDDS WMS server. "
-                "Available values can be found at https://reading-escience-centre.gitbooks.io/ncwms-user-guide/content/04-usage.html#getmap"
-            ),
-        ),
-        starlette_admin.FloatField("color_scale_min", required=True),
-        starlette_admin.FloatField("color_scale_max", required=True),
-        starlette_admin.IntegerField(
-            "data_precision",
-            required=True,
-            help_text=(
-                "Number of decimal places to be used when displaying data values"
-            ),
         ),
         fields.RelatedObservationsVariableField(
             "observation_variable",
@@ -419,21 +424,22 @@ class CoverageConfigurationView(ModelView):
 
     exclude_fields_from_list = (
         "id",
-        "display_name_english",
-        "display_name_italian",
-        "description_english",
-        "description_italian",
+        "thredds_url_pattern",
+        # "display_name_english",
+        # "display_name_italian",
+        # "description_english",
+        # "description_italian",
         "netcdf_main_dataset_name",
         "wms_main_layer_name",
         "wms_secondary_layer_name",
         "coverage_id_pattern",
         "possible_values",
-        "unit_english",
-        "unit_italian",
-        "palette",
-        "color_scale_min",
-        "color_scale_max",
-        "data_precision",
+        # "unit_english",
+        # "unit_italian",
+        # "palette",
+        # "color_scale_min",
+        # "color_scale_max",
+        # "data_precision",
         "observation_variable",
         "observation_variable_aggregation_type",
         "uncertainty_lower_bounds_coverage_configuration",
@@ -488,12 +494,18 @@ class CoverageConfigurationView(ModelView):
         else:
             uncertainty_upper_bounds_coverage_configuration = None
         return read_schemas.CoverageConfigurationRead(
-            **instance.model_dump(exclude={"observation_variable_aggregation_type"}),
+            **instance.model_dump(
+                exclude={
+                    "observation_variable_aggregation_type",
+                    "climatic_indicator_id",
+                },
+            ),
             observation_variable_aggregation_type=(
                 instance.observation_variable_aggregation_type
                 or base.ObservationAggregationType.SEASONAL
             ),
             observation_variable=observation_variable,
+            climatic_indicator=instance.climatic_indicator_id,
             possible_values=[
                 read_schemas.ConfigurationParameterPossibleValueRead(
                     configuration_parameter_value_id=pv.configuration_parameter_value_id,
@@ -563,6 +575,10 @@ class CoverageConfigurationView(ModelView):
                         configuration_parameter_value_id=conf_param_value.id
                     )
                 )
+            # FIXME: looks like this needs to be called with anyio.to_thread.run_sync
+            climatic_indicator = database.get_climatic_indicator(
+                session, data["climatic_indicator"]
+            )
             related_obs_variable = database.get_variable_by_name(
                 session, data["observation_variable"]
             )
@@ -596,23 +612,26 @@ class CoverageConfigurationView(ModelView):
                 related_cov_conf_ids.append(db_related_cov_conf.id)
             cov_conf_create = coverages.CoverageConfigurationCreate(
                 name=data["name"],
-                display_name_english=data["display_name_english"],
-                display_name_italian=data["display_name_italian"],
-                description_english=data.get("display_name_english"),
-                description_italian=data.get("display_name_italian"),
+                # display_name_english=data["display_name_english"],
+                # display_name_italian=data["display_name_italian"],
+                # description_english=data.get("display_name_english"),
+                # description_italian=data.get("display_name_italian"),
                 netcdf_main_dataset_name=data["netcdf_main_dataset_name"],
                 wms_main_layer_name=data.get("wms_main_layer_name"),
                 wms_secondary_layer_name=data.get("wms_secondary_layer_name"),
                 thredds_url_pattern=data["thredds_url_pattern"],
-                unit_english=data["unit_english"],
-                unit_italian=data["unit_italian"],
-                palette=data["palette"],
-                color_scale_min=data["color_scale_min"],
-                color_scale_max=data["color_scale_max"],
-                data_precision=data["data_precision"],
+                # unit_english=data["unit_english"],
+                # unit_italian=data["unit_italian"],
+                # palette=data["palette"],
+                # color_scale_min=data["color_scale_min"],
+                # color_scale_max=data["color_scale_max"],
+                # data_precision=data["data_precision"],
                 possible_values=possible_values_create,
                 observation_variable_id=(
                     related_obs_variable.id if related_obs_variable else None
+                ),
+                climatic_indicator_id=(
+                    climatic_indicator.id if climatic_indicator else None
                 ),
                 observation_variable_aggregation_type=data.get(
                     "observation_variable_aggregation_type"
@@ -648,6 +667,10 @@ class CoverageConfigurationView(ModelView):
                         configuration_parameter_value_id=conf_param_value.id
                     )
                 )
+            # FIXME: call this via anyio.to_thread.run_sync
+            climatic_indicator = database.get_climatic_indicator(
+                session, data["climatic_indicator"]
+            )
             related_obs_variable = database.get_variable_by_name(
                 session, data["observation_variable"]
             )
@@ -681,21 +704,24 @@ class CoverageConfigurationView(ModelView):
                 related_cov_conf_ids.append(db_related_cov_conf.id)
             cov_conv_update = coverages.CoverageConfigurationUpdate(
                 name=data.get("name"),
-                display_name_english=data.get("display_name_english"),
-                display_name_italian=data.get("display_name_italian"),
-                description_english=data.get("display_name_english"),
-                description_italian=data.get("display_name_italian"),
+                # display_name_english=data.get("display_name_english"),
+                # display_name_italian=data.get("display_name_italian"),
+                # description_english=data.get("display_name_english"),
+                # description_italian=data.get("display_name_italian"),
                 netcdf_main_dataset_name=data.get("netcdf_main_dataset_name"),
                 wms_main_layer_name=data.get("wms_main_layer_name"),
                 wms_secondary_layer_name=data.get("wms_secondary_layer_name"),
                 thredds_url_pattern=data.get("thredds_url_pattern"),
-                unit_english=data.get("unit_english"),
-                unit_italian=data.get("unit_italian"),
-                palette=data.get("palette"),
-                color_scale_min=data.get("color_scale_min"),
-                color_scale_max=data.get("color_scale_max"),
-                data_precision=data.get("data_precision"),
+                # unit_english=data.get("unit_english"),
+                # unit_italian=data.get("unit_italian"),
+                # palette=data.get("palette"),
+                # color_scale_min=data.get("color_scale_min"),
+                # color_scale_max=data.get("color_scale_max"),
+                # data_precision=data.get("data_precision"),
                 possible_values=possible_values,
+                climatic_indicator_id=(
+                    climatic_indicator.id if climatic_indicator else None
+                ),
                 observation_variable_id=(
                     related_obs_variable.id if related_obs_variable else None
                 ),

@@ -10,7 +10,7 @@ from ....config import (
     LOCALE_IT,
 )
 from ....schemas import coverages as app_models
-from ....schemas.base import CoreConfParamName
+from ....schemas.climaticindicators import ClimaticIndicator
 from . import base
 
 
@@ -107,8 +107,8 @@ class CoverageConfigurationReadListItem(pydantic.BaseModel):
                     "display_name_italian",
                 }
             ),
-            display_name_english=instance.display_name_english or instance.name,
-            display_name_italian=instance.display_name_italian or instance.name,
+            display_name_english=instance.climatic_indicator.display_name_english,
+            display_name_italian=instance.climatic_indicator.display_name_italian,
             url=str(url),
             possible_values=[
                 ConfigurationParameterPossibleValueRead(
@@ -151,6 +151,13 @@ class CoverageConfigurationReadDetail(CoverageConfigurationReadListItem):
         )
         return cls(
             **instance.model_dump(),
+            display_name_english=instance.climatic_indicator.display_name_english,
+            display_name_italian=instance.climatic_indicator.display_name_italian,
+            description_english=instance.climatic_indicator.description_english,
+            description_italian=instance.climatic_indicator.description_italian,
+            unit_english=instance.climatic_indicator.unit_english,
+            unit_italian=instance.climatic_indicator.unit_italian,
+            data_precision=instance.climatic_indicator.data_precision,
             url=str(url),
             possible_values=[
                 ConfigurationParameterPossibleValueRead(
@@ -328,57 +335,73 @@ class ForecastMenuTranslations(pydantic.BaseModel):
 
     @classmethod
     def from_items(
-        cls, variable_menu_trees: typing.Sequence[app_models.ForecastVariableMenuTree]
+        cls,
+        var_combinations: dict[
+            ClimaticIndicator,
+            dict[
+                str,
+                dict[
+                    str,
+                    app_models.ConfigurationParameter
+                    | app_models.ConfigurationParameterValue,
+                ],
+            ],
+        ],
     ):
         result = {}
-        for variable_menu_tree in variable_menu_trees:
-            variable_cp = variable_menu_tree[
-                CoreConfParamName.CLIMATOLOGICAL_VARIABLE.value
-            ]
-            aggregation_period_cp = variable_menu_tree[
-                CoreConfParamName.AGGREGATION_PERIOD.value
-            ]
-            measure_cp = variable_menu_tree[CoreConfParamName.MEASURE.value]
+        for climatic_indicator, indicator_combinations in var_combinations.items():
             vars = result.setdefault("variable", {})
-            vars[variable_cp.name] = ConfigurationParameterMenuTranslation(
-                name={
-                    LOCALE_EN.language: variable_cp.display_name_english,
-                    LOCALE_IT.language: variable_cp.display_name_english,
+            vars[climatic_indicator.name] = {
+                "name": {
+                    LOCALE_EN.language: climatic_indicator.display_name_english,
+                    LOCALE_IT.language: climatic_indicator.display_name_italian,
                 },
-                description={
-                    LOCALE_EN.language: variable_cp.description_english,
-                    LOCALE_IT.language: variable_cp.description_italian,
+                "description": {
+                    LOCALE_EN.language: climatic_indicator.description_english,
+                    LOCALE_IT.language: climatic_indicator.description_italian,
                 },
-            )
-            aggreg_periods = result.setdefault(
-                CoreConfParamName.AGGREGATION_PERIOD.value, {}
-            )
-            aggreg_periods[
-                aggregation_period_cp.name
-            ] = ConfigurationParameterMenuTranslation(
-                name={
-                    LOCALE_EN.language: aggregation_period_cp.display_name_english,
-                    LOCALE_IT.language: aggregation_period_cp.display_name_english,
+            }
+            aggreg_periods = result.setdefault("aggregation_period", {})
+            aggreg_periods[climatic_indicator.aggregation_period.value.lower()] = {
+                "name": {
+                    LOCALE_EN.language: climatic_indicator.aggregation_period.get_value_display_name(
+                        LOCALE_EN
+                    ),
+                    LOCALE_IT.language: climatic_indicator.aggregation_period.get_value_display_name(
+                        LOCALE_IT
+                    ),
                 },
-                description={
-                    LOCALE_EN.language: aggregation_period_cp.description_english,
-                    LOCALE_IT.language: aggregation_period_cp.description_italian,
+                "description": {
+                    LOCALE_EN.language: climatic_indicator.aggregation_period.get_value_description(
+                        LOCALE_EN
+                    ),
+                    LOCALE_IT.language: climatic_indicator.aggregation_period.get_value_description(
+                        LOCALE_IT
+                    ),
                 },
-            )
-            measures = result.setdefault(CoreConfParamName.MEASURE.value, {})
-            measures[measure_cp.name] = ConfigurationParameterMenuTranslation(
-                name={
-                    LOCALE_EN.language: measure_cp.display_name_english,
-                    LOCALE_IT.language: measure_cp.display_name_english,
+            }
+            measures = result.setdefault("measure", {})
+            measures[climatic_indicator.measure_type.value.lower()] = {
+                "name": {
+                    LOCALE_EN.language: climatic_indicator.measure_type.get_value_display_name(
+                        LOCALE_EN
+                    ),
+                    LOCALE_IT.language: climatic_indicator.measure_type.get_value_display_name(
+                        LOCALE_IT
+                    ),
                 },
-                description={
-                    LOCALE_EN.language: measure_cp.description_english,
-                    LOCALE_IT.language: measure_cp.description_italian,
+                "description": {
+                    LOCALE_EN.language: climatic_indicator.measure_type.get_value_description(
+                        LOCALE_EN
+                    ),
+                    LOCALE_IT.language: climatic_indicator.measure_type.get_value_description(
+                        LOCALE_IT
+                    ),
                 },
-            )
+            }
             others = result.setdefault("other_parameters", {})
-            for combination_info in variable_menu_tree["combinations"].values():
-                cp = combination_info["configuration_parameter"]
+            for param_info in indicator_combinations.values():
+                cp = param_info["configuration_parameter"]
                 param_ = others.setdefault(cp.name, {})
                 for cpv in cp.allowed_values:
                     param_[cpv.name] = ConfigurationParameterMenuTranslation(
@@ -393,73 +416,8 @@ class ForecastMenuTranslations(pydantic.BaseModel):
                     )
         return cls(
             variable=result["variable"],
-            aggregation_period=result[CoreConfParamName.AGGREGATION_PERIOD.value],
-            measure=result[CoreConfParamName.MEASURE.value],
-            other_parameters=result["other_parameters"],
-        )
-
-
-class HistoricalMenuTranslations(pydantic.BaseModel):
-    variable: dict[str, ConfigurationParameterMenuTranslation]
-    aggregation_period: dict[str, ConfigurationParameterMenuTranslation]
-    other_parameters: dict[str, dict[str, ConfigurationParameterMenuTranslation]]
-
-    @classmethod
-    def from_items(
-        cls, variable_menu_trees: typing.Sequence[app_models.HistoricalVariableMenuTree]
-    ):
-        result = {}
-        for variable_menu_tree in variable_menu_trees:
-            variable_cp = variable_menu_tree[
-                CoreConfParamName.HISTORICAL_VARIABLE.value
-            ]
-            aggregation_period_cp = variable_menu_tree[
-                CoreConfParamName.AGGREGATION_PERIOD.value
-            ]
-            vars = result.setdefault("variable", {})
-            vars[variable_cp.name] = ConfigurationParameterMenuTranslation(
-                name={
-                    LOCALE_EN.language: variable_cp.display_name_english,
-                    LOCALE_IT.language: variable_cp.display_name_english,
-                },
-                description={
-                    LOCALE_EN.language: variable_cp.description_english,
-                    LOCALE_IT.language: variable_cp.description_italian,
-                },
-            )
-            aggreg_periods = result.setdefault(
-                CoreConfParamName.AGGREGATION_PERIOD.value, {}
-            )
-            aggreg_periods[
-                aggregation_period_cp.name
-            ] = ConfigurationParameterMenuTranslation(
-                name={
-                    LOCALE_EN.language: aggregation_period_cp.display_name_english,
-                    LOCALE_IT.language: aggregation_period_cp.display_name_english,
-                },
-                description={
-                    LOCALE_EN.language: aggregation_period_cp.description_english,
-                    LOCALE_IT.language: aggregation_period_cp.description_italian,
-                },
-            )
-            others = result.setdefault("other_parameters", {})
-            for combination_info in variable_menu_tree["combinations"].values():
-                cp = combination_info["configuration_parameter"]
-                param_ = others.setdefault(cp.name, {})
-                for cpv in cp.allowed_values:
-                    param_[cpv.name] = ConfigurationParameterMenuTranslation(
-                        name={
-                            LOCALE_EN.language: cpv.display_name_english,
-                            LOCALE_IT.language: cpv.display_name_english,
-                        },
-                        description={
-                            LOCALE_EN.language: cpv.description_english,
-                            LOCALE_IT.language: cpv.description_italian,
-                        },
-                    )
-        return cls(
-            variable=result["variable"],
-            aggregation_period=result[CoreConfParamName.AGGREGATION_PERIOD.value],
+            aggregation_period=result["aggregation_period"],
+            measure=result["measure"],
             other_parameters=result["other_parameters"],
         )
 
@@ -471,47 +429,32 @@ class ForecastVariableCombinations(pydantic.BaseModel):
     other_parameters: dict[str, list[str]]
 
     @classmethod
-    def from_items(cls, menu_tree: app_models.ForecastVariableMenuTree):
+    def from_items(
+        cls,
+        climatic_indicator: ClimaticIndicator,
+        parameter_combinations: dict[
+            str,
+            dict[
+                str,
+                app_models.ConfigurationParameter
+                | app_models.ConfigurationParameterValue,
+            ],
+        ],
+    ):
         combinations = {}
-        for param_name, param_combinations in menu_tree["combinations"].items():
-            combinations[param_name] = []
-            for valid_value in param_combinations["values"]:
-                combinations[param_name].append(
-                    (valid_value.name, valid_value.sort_order or 0)
-                )
+        for param_name, param_info in parameter_combinations.items():
+            sortable_param_values = []
+            for cpv in param_info["values"]:
+                sortable_param_values.append((cpv.name, cpv.sort_order or 0))
+            combinations[param_name] = sortable_param_values
 
         for param_name, param_combinations in combinations.items():
             param_combinations.sort(key=itemgetter(1))
             combinations[param_name] = [name for name, sort_order in param_combinations]
-
         return cls(
-            variable=menu_tree[CoreConfParamName.CLIMATOLOGICAL_VARIABLE.value].name,
-            aggregation_period=menu_tree[
-                CoreConfParamName.AGGREGATION_PERIOD.value
-            ].name,
-            measure=menu_tree[CoreConfParamName.MEASURE.value].name,
-            other_parameters=combinations,
-        )
-
-
-class HistoricalVariableCombinations(pydantic.BaseModel):
-    variable: str
-    aggregation_period: str
-    other_parameters: dict[str, list[str]]
-
-    @classmethod
-    def from_items(cls, menu_tree: app_models.HistoricalVariableMenuTree):
-        combinations = {}
-        for param_name, param_combinations in menu_tree["combinations"].items():
-            combinations[param_name] = []
-            for valid_value in param_combinations["values"]:
-                combinations[param_name].append(valid_value.name)
-
-        return cls(
-            variable=menu_tree[CoreConfParamName.HISTORICAL_VARIABLE.value].name,
-            aggregation_period=menu_tree[
-                CoreConfParamName.AGGREGATION_PERIOD.value
-            ].name,
+            variable=climatic_indicator.name,
+            aggregation_period=climatic_indicator.aggregation_period.value.lower(),
+            measure=climatic_indicator.measure_type.value.lower(),
             other_parameters=combinations,
         )
 
@@ -519,8 +462,3 @@ class HistoricalVariableCombinations(pydantic.BaseModel):
 class ForecastVariableCombinationsList(pydantic.BaseModel):
     combinations: list[ForecastVariableCombinations]
     translations: ForecastMenuTranslations
-
-
-class HistoricalVariableCombinationsList(pydantic.BaseModel):
-    combinations: list[HistoricalVariableCombinations]
-    translations: HistoricalMenuTranslations

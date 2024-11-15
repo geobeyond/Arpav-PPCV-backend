@@ -8,6 +8,29 @@ from ...schemas.base import (
     ObservationAggregationType,
     Season,
 )
+from ...schemas.static import (
+    AggregationPeriod,
+    MeasureType,
+)
+
+
+class ClimaticIndicatorRead(sqlmodel.SQLModel):
+    identifier: str
+    id: int
+    name: str
+    measure_type: MeasureType
+    aggregation_period: AggregationPeriod
+    display_name_english: str
+    display_name_italian: str
+    description_english: str
+    description_italian: str
+    unit_english: str
+    unit_italian: str
+    palette: str
+    color_scale_min: float
+    color_scale_max: float
+    data_precision: int
+    sort_order: int
 
 
 class ConfigurationParameterValueRead(sqlmodel.SQLModel):
@@ -44,21 +67,22 @@ class RelatedCoverageConfigurationRead(sqlmodel.SQLModel):
 class CoverageConfigurationRead(sqlmodel.SQLModel):
     id: uuid.UUID
     name: str
-    display_name_english: Optional[str]
-    display_name_italian: Optional[str]
-    description_english: Optional[str]
-    description_italian: Optional[str]
+    # display_name_english: Optional[str]
+    # display_name_italian: Optional[str]
+    # description_english: Optional[str]
+    # description_italian: Optional[str]
     netcdf_main_dataset_name: str
     wms_main_layer_name: str
     wms_secondary_layer_name: Optional[str]
     coverage_id_pattern: str
     thredds_url_pattern: str
-    unit_english: str
-    unit_italian: str
-    palette: str
-    color_scale_min: float
-    color_scale_max: float
-    data_precision: int
+    # unit_english: str
+    # unit_italian: str
+    # palette: str
+    # color_scale_min: float
+    # color_scale_max: float
+    # data_precision: int
+    climatic_indicator: Optional[int]
     possible_values: list[ConfigurationParameterPossibleValueRead]
     observation_variable_aggregation_type: ObservationAggregationType
     observation_variable: Optional["ObservationVariableRead"]
@@ -79,17 +103,6 @@ class ObservationVariableRead(sqlmodel.SQLModel):
 class CoverageConfigurationReadListItem(sqlmodel.SQLModel):
     id: uuid.UUID
     name: str
-
-
-class VariableRead(sqlmodel.SQLModel):
-    id: uuid.UUID
-    name: str
-    display_name_english: Optional[str]
-    display_name_italian: Optional[str]
-    description_english: Optional[str]
-    description_italian: Optional[str]
-    unit_english: Optional[str]
-    unit_italian: Optional[str]
 
 
 class StationRead(sqlmodel.SQLModel):
