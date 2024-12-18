@@ -23,7 +23,7 @@ import shapely
 import shapely.io
 import sqlmodel
 from anyio.from_thread import start_blocking_portal
-from arpav_ppcv.schemas.base import CoreConfParamName
+
 from dateutil.parser import isoparse
 from geoalchemy2.shape import to_shape
 from pandas.core.indexes.datetimes import DatetimeIndex
@@ -36,9 +36,11 @@ from . import (
 )
 from .schemas import (
     base,
+    climaticindicators,
     coverages,
     observations,
 )
+from .schemas.base import CoreConfParamName
 from .thredds import (
     crawler,
     ncss,
@@ -142,7 +144,7 @@ def _get_climate_barometer_data(
 
 def get_station_data(
     session: sqlmodel.Session,
-    variable: observations.Variable,
+    climatic_indicator: climaticindicators.ClimaticIndicator,
     station: observations.Station,
     month: int,
     temporal_range: tuple[dt.datetime | None, dt.datetime | None],
@@ -150,14 +152,14 @@ def get_station_data(
     raw_measurements = database.collect_all_monthly_measurements(
         session=session,
         station_id_filter=station.id,
-        variable_id_filter=variable.id,
+        climatic_indicator_id_filter=climatic_indicator.id,
         month_filter=month,
     )
     df = pd.DataFrame(m.model_dump() for m in raw_measurements)
     if not df.empty:
-        df = df.rename(columns={"value": variable.name})
+        df = df.rename(columns={"value": climatic_indicator.name})
         df["time"] = pd.to_datetime(df["date"], utc=True)
-        df = df[["time", variable.name]]
+        df = df[["time", climatic_indicator.name]]
         df.set_index("time", inplace=True)
         start, end = temporal_range
         if start is not None:
@@ -168,20 +170,20 @@ def get_station_data(
     else:
         logger.info(
             f"Station {station.id!r} has no measurements for month {month!r} and "
-            f"variable {variable.id!r}"
+            f"climatic indicator {climatic_indicator.identifier!r}"
         )
 
 
 def aggregate_decade_data(
-    variable: observations.Variable, measurements: pd.DataFrame
+    climatic_indicator: climaticindicators.ClimaticIndicator, measurements: pd.DataFrame
 ) -> pd.DataFrame:
     # group values by climatological decade, which starts at year 1 and ends at year 10
     decade_grouper = measurements.groupby(((measurements.index.year - 1) // 10) * 10)
 
-    mean_column_name = variable.name
+    mean_column_name = climatic_indicator.name
     decade_df = decade_grouper.agg(
-        num_values=(variable.name, "size"),
-        **{mean_column_name: (variable.name, "mean")},
+        num_values=(climatic_indicator.name, "size"),
+        **{mean_column_name: (climatic_indicator.name, "mean")},
     )
     # discard decades where there are less than 7 years
     decade_df = decade_df[decade_df.num_values >= 7]
@@ -192,22 +194,22 @@ def aggregate_decade_data(
 
 
 def generate_mann_kendall_data(
-    variable: observations.Variable,
+    climatic_indicator: climaticindicators.ClimaticIndicator,
     measurements: pd.DataFrame,
     parameters: base.MannKendallParameters,
 ) -> tuple[pd.DataFrame, dict[str, str | int | float]]:
-    mk_col = f"{variable.name}__MANN_KENDALL"
+    mk_col = f"{climatic_indicator.name}__MANN_KENDALL"
     mk_start = parameters.start_year or measurements.index[0].year
     mk_end = parameters.end_year or measurements.index[-1].year
     if mk_end - mk_start >= 27:
         mk_df = measurements[str(mk_start) : str(mk_end)].copy()
-        mk_result = mk.original_test(mk_df[variable.name])
+        mk_result = mk.original_test(mk_df[climatic_indicator.name])
         mk_df[mk_col] = (
             mk_result.slope * (mk_df.index.year - mk_df.index.year.min())
             + mk_result.intercept
         )
         # mk_df = mk_df[["time", mk_col]].rename(columns={mk_col: variable.name})
-        mk_df = mk_df[[mk_col]].rename(columns={mk_col: variable.name})
+        mk_df = mk_df[[mk_col]].rename(columns={mk_col: climatic_indicator.name})
         info = {
             "trend": mk_result.trend,
             "h": bool(mk_result.h),
@@ -226,7 +228,7 @@ def generate_mann_kendall_data(
 
 def get_observation_time_series(
     session: sqlmodel.Session,
-    variable: observations.Variable,
+    climatic_indicator: climaticindicators.ClimaticIndicator,
     station: observations.Station,
     month: int,
     temporal_range: str,
@@ -243,11 +245,11 @@ def get_observation_time_series(
 ]:
     """Get monthly observation measurements."""
     start, end = parse_temporal_range(temporal_range)
-    df = get_station_data(session, variable, station, month, (start, end))
+    df = get_station_data(session, climatic_indicator, station, month, (start, end))
     if df is not None:
         result = {
             (base.ObservationDataSmoothingStrategy.NO_SMOOTHING, None): (
-                df[variable.name].squeeze(),
+                df[climatic_indicator.name].squeeze(),
                 None,
             )
         }
@@ -258,140 +260,31 @@ def get_observation_time_series(
         ]
         for smoothing_strategy in additional_strategies:
             smoothed_df, smoothed_column_name = process_station_data_smoothing_strategy(
-                df, variable.name, smoothing_strategy
+                df, climatic_indicator.name, smoothing_strategy
             )
             result[(smoothing_strategy, None)] = (
                 smoothed_df[smoothed_column_name].squeeze(),
                 None,
             )
         if include_decade_data:
-            decade_df = aggregate_decade_data(variable, df)
+            decade_df = aggregate_decade_data(climatic_indicator, df)
             result[
                 (
                     base.ObservationDataSmoothingStrategy.NO_SMOOTHING,
                     base.ObservationDerivedSeries.DECADE_SERIES,
                 )
-            ] = (decade_df[variable.name].squeeze(), None)
+            ] = (decade_df[climatic_indicator.name].squeeze(), None)
         if mann_kendall_parameters is not None:
             mk_df, mk_info = generate_mann_kendall_data(
-                variable, df, mann_kendall_parameters
+                climatic_indicator, df, mann_kendall_parameters
             )
             result[
                 (
                     base.ObservationDataSmoothingStrategy.NO_SMOOTHING,
                     base.ObservationDerivedSeries.MANN_KENDALL_SERIES,
                 )
-            ] = (mk_df[variable.name].squeeze(), {"mann-kendall": mk_info})
+            ] = (mk_df[climatic_indicator.name].squeeze(), {"mann-kendall": mk_info})
         return result
-
-
-def old_get_observation_time_series(
-    session: sqlmodel.Session,
-    variable: observations.Variable,
-    station: observations.Station,
-    month: int,
-    temporal_range: str,
-    smoothing_strategies: list[base.ObservationDataSmoothingStrategy] = [  # noqa
-        base.ObservationDataSmoothingStrategy.NO_SMOOTHING
-    ],
-    include_decade_data: bool = False,
-    mann_kendall_parameters: base.MannKendallParameters | None = None,
-) -> tuple[
-    pd.DataFrame,
-    Optional[pd.DataFrame],
-    Optional[pd.DataFrame],
-    Optional[dict[str, str]],
-]:
-    start, end = parse_temporal_range(temporal_range)
-    raw_measurements = database.collect_all_monthly_measurements(
-        session=session,
-        station_id_filter=station.id,
-        variable_id_filter=variable.id,
-        month_filter=month,
-    )
-    df = pd.DataFrame(m.model_dump() for m in raw_measurements)
-    base_name = variable.name
-    df = df[["value", "date"]].rename(columns={"value": base_name})
-    df["time"] = pd.to_datetime(df["date"], utc=True)
-    df = df[["time", base_name]]
-    df.set_index("time", inplace=True)
-    if start is not None:
-        df = df[start:]
-    if end is not None:
-        df = df[:end]
-    unsmoothed_col_name = "__".join(
-        (base_name, base.ObservationDataSmoothingStrategy.NO_SMOOTHING.value)
-    )
-    df[unsmoothed_col_name] = df[base_name]
-    info = {}
-
-    if include_decade_data:
-        # group values by climatological decade, which starts at year 1 and ends at year 10
-        decade_grouper = df.groupby(((df.index.year - 1) // 10) * 10)
-
-        mean_column_name = f"{base_name}__DECADE_MEAN"
-        decade_df = decade_grouper.agg(
-            num_values=(unsmoothed_col_name, "size"),
-            **{mean_column_name: (unsmoothed_col_name, "mean")},
-        )
-
-        # discard decades where there are less than 7 years
-        decade_df = decade_df[decade_df.num_values >= 7]
-
-        decade_df = decade_df.drop(columns=["num_values"])
-        decade_df["time"] = pd.to_datetime(decade_df.index.astype(str), utc=True)
-        decade_df.set_index("time", inplace=True)
-    else:
-        decade_df = None
-
-    if mann_kendall_parameters is not None:
-        mk_col = f"{base_name}__MANN_KENDALL"
-        mk_start = mann_kendall_parameters.start_year or df.index[0].year
-        mk_end = mann_kendall_parameters.end_year or df.index[-1].year
-        if mk_end - mk_start >= 27:
-            mk_df = df[str(mk_start) : str(mk_end)].copy()
-            mk_result = mk.original_test(mk_df[base_name])
-            mk_df[mk_col] = (
-                mk_result.slope * (mk_df.index.year - mk_df.index.year.min())
-                + mk_result.intercept
-            )
-            mk_df = mk_df.drop(columns=[base_name, unsmoothed_col_name])
-            info.update(
-                {
-                    "mann_kendall": {
-                        "trend": mk_result.trend,
-                        "h": mk_result.h,
-                        "p": mk_result.p,
-                        "z": mk_result.z,
-                        "tau": mk_result.Tau,
-                        "s": mk_result.s,
-                        "var_s": mk_result.var_s,
-                        "slope": mk_result.slope,
-                        "intercept": mk_result.intercept,
-                    }
-                }
-            )
-        else:
-            raise ValueError(
-                "Mann-Kendall start and end year must span at least 27 years"
-            )
-    else:
-        mk_df = None
-
-    for smoothing_strategy in smoothing_strategies:
-        if (
-            smoothing_strategy
-            == base.ObservationDataSmoothingStrategy.MOVING_AVERAGE_5_YEARS
-        ):
-            col_name = "__".join((base_name, smoothing_strategy.value))
-            df[col_name] = df[base_name].rolling(window=5, center=True).mean()
-
-    df = df.drop(
-        columns=[
-            base_name,
-        ]
-    )
-    return df, decade_df, mk_df, info if len(info) > 0 else None
 
 
 async def async_retrieve_data_via_ncss(
@@ -631,7 +524,7 @@ def get_coverage_time_series(
         dict[
             tuple[
                 observations.Station,
-                observations.Variable,
+                climaticindicators.ClimaticIndicator,
                 base.ObservationDataSmoothingStrategy,
             ],
             pd.Series,
@@ -709,7 +602,6 @@ def get_coverage_time_series(
             for ss in observation_smoothing_strategies
             if ss != base.ObservationDataSmoothingStrategy.NO_SMOOTHING
         ]
-        variable = coverage.configuration.related_observation_variable
         if coverage.configuration.related_observation_variable is not None:
             station_data = extract_nearby_station_data(
                 session,
@@ -725,7 +617,7 @@ def get_coverage_time_series(
                     raw_station_data,
                     start,
                     end,
-                    variable.name,
+                    coverage.configuration.climatic_indicator.name,
                     aggregation_type=(
                         coverage.configuration.observation_variable_aggregation_type
                     ),
@@ -733,25 +625,31 @@ def get_coverage_time_series(
                 observation_result[
                     (
                         station,
-                        variable,
+                        coverage.configuration.climatic_indicator,
                         base.ObservationDataSmoothingStrategy.NO_SMOOTHING,
                     )
-                ] = station_df[variable.name].squeeze()
+                ] = station_df[coverage.configuration.climatic_indicator.name].squeeze()
                 for smoothing_strategy in additional_observation_smoothing_strategies:
                     (
                         station_df,
                         smoothed_column,
                     ) = process_station_data_smoothing_strategy(
-                        station_df, variable.name, smoothing_strategy
+                        station_df,
+                        coverage.configuration.climatic_indicator.name,
+                        smoothing_strategy,
                     )
                     observation_result[
-                        (station, variable, smoothing_strategy)
+                        (
+                            station,
+                            coverage.configuration.climatic_indicator,
+                            smoothing_strategy,
+                        )
                     ] = station_df[smoothed_column].squeeze()
             else:
                 logger.info("No station data found, skipping...")
         else:
             logger.info(
-                "Cannot include observation data - no observation variable is related "
+                "Cannot include observation data - no climatic indicator is related "
                 "to this coverage configuration"
             )
     return coverage_result, observation_result
@@ -940,197 +838,94 @@ def _get_spatial_buffer(
 
 def get_historical_variable_parameters(
     session: sqlmodel.Session,
-) -> dict[str, coverages.HistoricalVariableMenuTree]:
+) -> dict[
+    climaticindicators.ClimaticIndicator,
+    dict[
+        str,
+        dict[
+            str,
+            coverages.ConfigurationParameter
+            | list[coverages.ConfigurationParameterValue],
+        ],
+    ],
+]:
     result = {}
-    historical_filter = database.get_configuration_parameter_value_by_names(
-        session, base.CoreConfParamName.ARCHIVE.value, "historical"
-    )
-    relevant_cov_confs = database.collect_all_coverage_configurations(
-        session, configuration_parameter_values_filter=[historical_filter]
-    )
-    for cov_conf in relevant_cov_confs:
-        variable_pvs = [
-            pv
-            for pv in cov_conf.possible_values
-            if pv.configuration_parameter_value.configuration_parameter.name
-            == base.CoreConfParamName.HISTORICAL_VARIABLE.value
-        ]
-        if (num_pvs := len(variable_pvs)) >= 1:
-            variable_pv = variable_pvs[0]
-            if num_pvs > 1:
-                logger.info(
-                    f"coverage configuration {cov_conf.name!r} defines "
-                    f"{len(variable_pvs)} `historical_variable`s, keeping only the "
-                    f"first one..."
-                )
-        else:
-            logger.info(
-                f"coverage configuration {cov_conf.name!r} does not have a "
-                f"`historical_variable`, skipping..."
-            )
-            continue
-        aggreg_period_pvs = [
-            pv
-            for pv in cov_conf.possible_values
-            if pv.configuration_parameter_value.configuration_parameter.name
-            == base.CoreConfParamName.AGGREGATION_PERIOD.value
-        ]
-        if (num_aggreg_periods := len(aggreg_period_pvs)) >= 1:
-            aggreg_period_pv = aggreg_period_pvs[0]
-            if num_aggreg_periods > 1:
-                logger.info(
-                    f"coverage configuration {cov_conf.name!r} defines "
-                    f"{len(variable_pvs)} `aggregation_period`s, keeping only the "
-                    f"first one..."
-                )
-        else:
-            logger.info(
-                f"coverage configuration {cov_conf.name!r} does not have a "
-                f"`aggregation_period`, skipping..."
-            )
-            continue
-        result_key = "-".join(
-            (
-                variable_pv.configuration_parameter_value.name,
-                aggreg_period_pv.configuration_parameter_value.name,
-            )
-        )
-        aggregated_variable = result.setdefault(result_key, {})
-        aggregated_variable[
-            base.CoreConfParamName.HISTORICAL_VARIABLE.value
-        ] = variable_pv.configuration_parameter_value
-        aggregated_variable[
-            base.CoreConfParamName.AGGREGATION_PERIOD.value
-        ] = aggreg_period_pv.configuration_parameter_value
-        combinations = aggregated_variable.setdefault("combinations", {})
-        params_to_ignore = (
-            base.CoreConfParamName.CLIMATOLOGICAL_VARIABLE.value,
-            base.CoreConfParamName.AGGREGATION_PERIOD.value,
-            base.CoreConfParamName.UNCERTAINTY_TYPE.value,
-        )
-        for pv in cov_conf.possible_values:
-            param_name = pv.configuration_parameter_value.configuration_parameter.name
-            if param_name not in params_to_ignore:
-                param_entry = combinations.setdefault(param_name, {})
-                param_entry[
-                    "configuration_parameter"
-                ] = pv.configuration_parameter_value.configuration_parameter
-                values = param_entry.setdefault("values", [])
-                existing_value_names = [cpv.name for cpv in values]
-                if pv.configuration_parameter_value.name not in existing_value_names:
-                    values.append(pv.configuration_parameter_value)
+    params_to_ignore = [
+        "climatological_variable",
+        "measure",
+        "aggregation_period",
+        base.CoreConfParamName.UNCERTAINTY_TYPE.value,
+        base.CoreConfParamName.ARCHIVE.value,
+    ]
+    for climatic_indicator in database.collect_all_climatic_indicators(session):
+        clim_ind_entry = {}
+        for cov_conf in climatic_indicator.related_coverage_configurations:
+            if cov_conf.archive == "historical":
+                for pv in cov_conf.possible_values:
+                    param_name = (
+                        pv.configuration_parameter_value.configuration_parameter.name
+                    )
+                    if param_name not in params_to_ignore:
+                        param_entry = clim_ind_entry.setdefault(param_name, {})
+                        param_entry[
+                            "configuration_parameter"
+                        ] = pv.configuration_parameter_value.configuration_parameter
+                        values = param_entry.setdefault("values", [])
+                        existing_value_names = [cpv.name for cpv in values]
+                        if (
+                            pv.configuration_parameter_value.name
+                            not in existing_value_names
+                        ):
+                            values.append(pv.configuration_parameter_value)
+        if len(clim_ind_entry) > 0:
+            result[climatic_indicator] = clim_ind_entry
     return result
 
 
 def get_forecast_variable_parameters(
     session: sqlmodel.Session,
-) -> dict[str, coverages.ForecastVariableMenuTree]:
+) -> dict[
+    climaticindicators.ClimaticIndicator,
+    dict[
+        str,
+        dict[
+            str,
+            coverages.ConfigurationParameter
+            | list[coverages.ConfigurationParameterValue],
+        ],
+    ],
+]:
     result = {}
-    forecast_filter = database.get_configuration_parameter_value_by_names(
-        session, base.CoreConfParamName.ARCHIVE.value, "forecast"
-    )
-    relevant_cov_confs = database.collect_all_coverage_configurations(
-        session, configuration_parameter_values_filter=[forecast_filter]
-    )
-    for cov_conf in relevant_cov_confs:
-        variable_pvs = [
-            pv
-            for pv in cov_conf.possible_values
-            if pv.configuration_parameter_value.configuration_parameter.name
-            == base.CoreConfParamName.CLIMATOLOGICAL_VARIABLE.value
-        ]
-        if (num_pvs := len(variable_pvs)) >= 1:
-            variable_pv = variable_pvs[0]
-            if num_pvs > 1:
-                logger.info(
-                    f"coverage configuration {cov_conf.name!r} defines "
-                    f"{len(variable_pvs)} `climatological_variable`s, keeping only the "
-                    f"first one..."
-                )
-        else:
-            logger.info(
-                f"coverage configuration {cov_conf.name!r} does not have a "
-                f"`climatological_variable`, skipping..."
-            )
-            continue
-
-        aggreg_period_pvs = [
-            pv
-            for pv in cov_conf.possible_values
-            if pv.configuration_parameter_value.configuration_parameter.name
-            == base.CoreConfParamName.AGGREGATION_PERIOD.value
-        ]
-        if (num_aggreg_periods := len(aggreg_period_pvs)) >= 1:
-            aggreg_period_pv = aggreg_period_pvs[0]
-            if num_aggreg_periods > 1:
-                logger.info(
-                    f"coverage configuration {cov_conf.name!r} defines "
-                    f"{len(variable_pvs)} `aggregation_period`s, keeping only the "
-                    f"first one..."
-                )
-        else:
-            logger.info(
-                f"coverage configuration {cov_conf.name!r} does not have a "
-                f"`aggregation_period`, skipping..."
-            )
-            continue
-
-        measure_pvs = [
-            pv
-            for pv in cov_conf.possible_values
-            if pv.configuration_parameter_value.configuration_parameter.name
-            == base.CoreConfParamName.MEASURE.value
-        ]
-        if (num_measures := len(measure_pvs)) >= 1:
-            measure_pv = measure_pvs[0]
-            if num_measures > 1:
-                logger.info(
-                    f"coverage configuration {cov_conf.name!r} defines "
-                    f"{len(variable_pvs)} `measures`s, keeping only the "
-                    f"first one..."
-                )
-        else:
-            logger.info(
-                f"coverage configuration {cov_conf.name!r} does not have a "
-                f"`measure`, skipping..."
-            )
-            continue
-
-        result_key = "-".join(
-            (
-                variable_pv.configuration_parameter_value.name,
-                aggreg_period_pv.configuration_parameter_value.name,
-                measure_pv.configuration_parameter_value.name,
-            )
-        )
-        aggregated_variable = result.setdefault(result_key, {})
-        aggregated_variable[
-            base.CoreConfParamName.CLIMATOLOGICAL_VARIABLE.value
-        ] = variable_pv.configuration_parameter_value
-        aggregated_variable[
-            base.CoreConfParamName.AGGREGATION_PERIOD.value
-        ] = aggreg_period_pv.configuration_parameter_value
-        aggregated_variable[
-            base.CoreConfParamName.MEASURE.value
-        ] = measure_pv.configuration_parameter_value
-        combinations = aggregated_variable.setdefault("combinations", {})
-        params_to_ignore = (
-            base.CoreConfParamName.CLIMATOLOGICAL_VARIABLE.value,
-            base.CoreConfParamName.AGGREGATION_PERIOD.value,
-            base.CoreConfParamName.MEASURE.value,
-            base.CoreConfParamName.UNCERTAINTY_TYPE.value,
-        )
-        for pv in cov_conf.possible_values:
-            param_name = pv.configuration_parameter_value.configuration_parameter.name
-            if param_name not in params_to_ignore:
-                param_entry = combinations.setdefault(param_name, {})
-                param_entry[
-                    "configuration_parameter"
-                ] = pv.configuration_parameter_value.configuration_parameter
-                values = param_entry.setdefault("values", [])
-                existing_value_names = [cpv.name for cpv in values]
-                if pv.configuration_parameter_value.name not in existing_value_names:
-                    values.append(pv.configuration_parameter_value)
+    params_to_ignore = [
+        "climatological_variable",
+        "measure",
+        "aggregation_period",
+        base.CoreConfParamName.UNCERTAINTY_TYPE.value,
+        base.CoreConfParamName.ARCHIVE.value,
+    ]
+    for climatic_indicator in database.collect_all_climatic_indicators(session):
+        # clim_ind_entry = result.setdefault(climatic_indicator, {})
+        clim_ind_entry = {}
+        for cov_conf in climatic_indicator.related_coverage_configurations:
+            if cov_conf.archive == "forecast":
+                for pv in cov_conf.possible_values:
+                    param_name = (
+                        pv.configuration_parameter_value.configuration_parameter.name
+                    )
+                    if param_name not in params_to_ignore:
+                        param_entry = clim_ind_entry.setdefault(param_name, {})
+                        param_entry[
+                            "configuration_parameter"
+                        ] = pv.configuration_parameter_value.configuration_parameter
+                        values = param_entry.setdefault("values", [])
+                        existing_value_names = [cpv.name for cpv in values]
+                        if (
+                            pv.configuration_parameter_value.name
+                            not in existing_value_names
+                        ):
+                            values.append(pv.configuration_parameter_value)
+        if len(clim_ind_entry) > 0:
+            result[climatic_indicator] = clim_ind_entry
     return result
 
 
@@ -1139,12 +934,12 @@ def create_db_schema(session: sqlmodel.Session, schema_name: str):
     session.commit()
 
 
-def refresh_station_variable_database_view(
+def refresh_station_climatic_indicator_database_view(
     session: sqlmodel.Session,
-    variable: observations.Variable,
+    climatic_indicator: climaticindicators.ClimaticIndicator,
     db_schema_name: Optional[str] = "public",
 ):
-    sanitized_name = sanitize_observation_variable_name(variable.name)
+    sanitized_name = sanitize_observation_variable_name(climatic_indicator.name)
     view_name = f"{db_schema_name}.stations_{sanitized_name}"
     index_name = f"idx_{sanitized_name}"
     drop_view_statement = sqlmodel.text(f"DROP MATERIALIZED VIEW IF EXISTS {view_name}")
@@ -1153,20 +948,23 @@ def refresh_station_variable_database_view(
         f"AS SELECT DISTINCT s.* "
         f"FROM yearlymeasurement AS ym "
         f"JOIN station AS s ON s.id = ym.station_id "
-        f"JOIN variable AS v ON v.id = ym.variable_id "
-        f"WHERE v.name = '{variable.name}' "
+        f"JOIN climaticindicator AS c ON c.id = ym.climatic_indicator_id "
+        f"WHERE c.name = '{climatic_indicator.name}' "
+        f"AND c.measure_type = '{climatic_indicator.measure_type.value}' "
         f"UNION "
         f"SELECT DISTINCT s.* "
         f"FROM seasonalmeasurement AS sm "
         f"JOIN station AS s ON s.id = sm.station_id "
-        f"JOIN variable AS v ON v.id = sm.variable_id "
-        f"WHERE v.name = '{variable.name}' "
+        f"JOIN climaticindicator AS c ON c.id = sm.variable_id "
+        f"WHERE c.name = '{climatic_indicator.name}' "
+        f"AND c.measure_type = '{climatic_indicator.measure_type.value}' "
         f"UNION "
         f"SELECT DISTINCT s.* "
         f"FROM monthlymeasurement AS mm "
         f"JOIN station AS s ON s.id = mm.station_id "
-        f"JOIN variable AS v ON v.id = mm.variable_id "
-        f"WHERE v.name = '{variable.name}' "
+        f"JOIN climaticindicator AS c ON c.id = mm.variable_id "
+        f"WHERE c.name = '{climatic_indicator.name}' "
+        f"AND c.measure_type = '{climatic_indicator.measure_type.value}' "
         f"WITH DATA"
     )
     drop_index_statement = sqlmodel.text(f"DROP INDEX IF EXISTS {index_name}")
@@ -1221,26 +1019,20 @@ def list_coverage_identifiers_by_param_values(
     limit: int = 20,
     offset: int = 0,
 ) -> list[str]:
-    valid_variables = _filter_configuration_parameter_values(
+    valid_climatic_indicators = _list_possible_climatic_indicators(
         session,
         climatological_variable_filter or [],
-        CoreConfParamName.CLIMATOLOGICAL_VARIABLE.value,
+        measure_filter or [],
+        aggregation_period_filter or [],
     )
+    logger.debug(f"{locals()=}")
     valid_climatological_models = _filter_configuration_parameter_values(
         session,
         climatological_model_filter or [],
         CoreConfParamName.CLIMATOLOGICAL_MODEL.value,
     )
-    valid_aggregation_periods = _filter_configuration_parameter_values(
-        session,
-        aggregation_period_filter or [],
-        CoreConfParamName.AGGREGATION_PERIOD.value,
-    )
     valid_scenarios = _filter_configuration_parameter_values(
         session, scenario_filter or [], CoreConfParamName.SCENARIO.value
-    )
-    valid_measures = _filter_configuration_parameter_values(
-        session, measure_filter or [], CoreConfParamName.MEASURE.value
     )
     valid_year_periods = _filter_configuration_parameter_values(
         session, year_period_filter or [], CoreConfParamName.YEAR_PERIOD.value
@@ -1256,28 +1048,16 @@ def list_coverage_identifiers_by_param_values(
     valid_time_window_names = [tw.name for tw in valid_time_windows if tw is not None]
     coverage_identifiers = set()
     for combination in itertools.product(
-        valid_variables,
-        valid_aggregation_periods,
+        valid_climatic_indicators,
         valid_climatological_models,
         valid_scenarios,
-        valid_measures,
         valid_year_periods,
         valid_time_windows,
     ):
-        (
-            variable,
-            aggregation_period,
-            model,
-            scenario,
-            measure,
-            year_period,
-            time_window,
-        ) = combination
+        climatic_indicator, model, scenario, year_period, time_window = combination
         logger.debug(
-            f"getting links for variable: {variable.name!r}, "
-            f"aggregation_period: {aggregation_period.name!r}, "
+            f"getting links for climatic_indicator: {climatic_indicator.identifier!r}, "
             f"model: {model.name!r}, scenario: {scenario.name!r}, "
-            f"measure: {measure.name!r}, "
             f"year_period: {year_period.name!r}, "
             f"time_window: {time_window.name if time_window else time_window!r}..."
         )
@@ -1285,11 +1065,8 @@ def list_coverage_identifiers_by_param_values(
             database.get_configuration_parameter_value_by_names(
                 session, CoreConfParamName.ARCHIVE.value, "forecast"
             ),
-            variable,
-            aggregation_period,
             model,
             scenario,
-            measure,
             year_period,
             time_window,
         ]
@@ -1299,6 +1076,7 @@ def list_coverage_identifiers_by_param_values(
             limit=limit,
             offset=offset,
             configuration_parameter_values_filter=filter_,
+            climatic_indicator_filter=climatic_indicator,
         )
         for cov_conf in cov_confs:
             identifiers = database.generate_coverage_identifiers(
@@ -1322,3 +1100,29 @@ def list_coverage_identifiers_by_param_values(
         if len(coverage_identifiers) > (offset + limit):
             break
     return sorted(coverage_identifiers)[offset : offset + limit]
+
+
+def _list_possible_climatic_indicators(
+    session: sqlmodel.Session,
+    variable_names: Sequence[str],
+    measure_types: Sequence[str],
+    aggregation_periods: Sequence[str],
+) -> list[climaticindicators.ClimaticIndicator]:
+    filtered = database.collect_all_climatic_indicators(session)
+    if len(variable_names) > 0:
+        filtered = [i for i in filtered if i.name in variable_names]
+    if len(measure_types) > 0:
+        filtered = [
+            i for i in filtered if i.measure_type.value.lower() in measure_types
+        ]
+    if len(aggregation_periods) > 0:
+        periods = []
+        for p in aggregation_periods:
+            if p == "30yr":
+                periods.append("thirty_year")
+            else:
+                periods.append(p)
+        filtered = [
+            i for i in filtered if i.aggregation_period.value.lower() in periods
+        ]
+    return filtered

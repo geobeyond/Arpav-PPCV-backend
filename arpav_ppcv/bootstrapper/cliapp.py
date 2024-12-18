@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Optional
 
 import geojson_pydantic
 import sqlmodel
@@ -45,7 +45,22 @@ from .coverage_configurations.historical import (
     tr as tr_historical,
     txd as txd_historical,
 )
-from .variables import generate_variable_configurations
+from .climaticindicators import (
+    cdd as cdd_climatic_indicators,
+    cdds as cdds_climatic_indicators,
+    fd as fd_climatic_indicators,
+    hdds as hdds_climatic_indicators,
+    hwdi as hwdi_climatic_indicators,
+    pr as pr_climatic_indicators,
+    r95ptot as r95ptot_climatic_indicators,
+    snwdays as snwdays_climatic_indicators,
+    su30 as su30_climatic_indicators,
+    tas as tas_climatic_indicators,
+    tasmax as tasmax_climatic_indicators,
+    tasmin as tasmin_climatic_indicators,
+    tr as tr_climatic_indicators,
+)
+
 from .configurationparameters import generate_configuration_parameters
 
 app = typer.Typer()
@@ -53,11 +68,19 @@ app = typer.Typer()
 
 @app.command("municipalities")
 def bootstrap_municipalities(
-    ctx: typer.Context, municipalities_dataset: Path, force: bool = False
+    ctx: typer.Context,
+    municipalities_dataset: Annotated[
+        Path,
+        typer.Argument(
+            help=(
+                "Path to the municipalities geoJSON dataset. Example: "
+                "/home/appuser/app/data/municipalities-istat-2021.geojson"
+            )
+        ),
+    ],
+    force: bool = False,
 ) -> None:
     """Bootstrap Italian municipalities"""
-    # data_directory = Path(__file__).parents[2] / "data"
-    # municipalities_dataset = data_directory / "limits_IT_municipalities.geojson"
     to_create = []
 
     should_bootstrap = False
@@ -162,24 +185,69 @@ def bootstrap_station_variables(
     print("Done!")
 
 
-@app.command("observation-variables")
-def bootstrap_observation_variables(
-    ctx: typer.Context,
+@app.command("climatic-indicators")
+def bootstrap_climatic_indicators(
+    ctx: typer.Context, name_filter: Optional[str] = None
 ):
-    """Create initial observation variables."""
-    variables = generate_variable_configurations()
+    """Create initial climatic indicators."""
+    climatic_indicators_to_generate = (
+        cdd_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        cdds_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        fd_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        hdds_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        hwdi_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        pr_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        r95ptot_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        snwdays_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        su30_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        tas_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        tasmax_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        tasmin_climatic_indicators.generate_climatic_indicators()
+    )
+    climatic_indicators_to_generate.extend(
+        tr_climatic_indicators.generate_climatic_indicators()
+    )
     with sqlmodel.Session(ctx.obj["engine"]) as session:
-        for var_create in variables:
-            try:
-                db_variable = database.create_variable(session, var_create)
-                print(f"Created observation variable {db_variable.name!r}")
-            except IntegrityError as err:
-                print(
-                    f"Could not create observation "
-                    f"variable {var_create.name!r}: {err}"
-                )
-                session.rollback()
-    print("Done!")
+        for climatic_indicator_create in climatic_indicators_to_generate:
+            if name_filter is None or name_filter in climatic_indicator_create.name:
+                try:
+                    db_climatic_indicator = database.create_climatic_indicator(
+                        session, climatic_indicator_create
+                    )
+                    print(
+                        f"Created climatic indicator {db_climatic_indicator.identifier!r}"
+                    )
+                except IntegrityError as err:
+                    print(
+                        f"Could not create climatic indicator ("
+                        f"{climatic_indicator_create.name!r}, "
+                        f"{climatic_indicator_create.measure_type!r}, "
+                        f"{climatic_indicator_create.aggregation_period!r}"
+                        f"): {err}"
+                    )
+                    session.rollback()
 
 
 @app.command("coverage-configuration-parameters")
@@ -210,81 +278,83 @@ def bootstrap_coverage_configurations(
 ):
     """Create initial coverage configurations."""
     with sqlmodel.Session(ctx.obj["engine"]) as session:
-        all_vars = database.collect_all_variables(session)
         all_conf_param_values = database.collect_all_configuration_parameter_values(
             session
         )
-        variables = {v.name: v for v in all_vars}
         conf_param_values = {
             (pv.configuration_parameter.name, pv.name): pv
             for pv in all_conf_param_values
         }
+        all_climatic_indicators = database.collect_all_climatic_indicators(session)
+        clim_indicator_ids = {i.identifier: i.id for i in all_climatic_indicators}
     coverage_configurations = []
     coverage_configurations.extend(
-        cdd_forecast.generate_configurations(conf_param_values)
+        cdd_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        cdds_forecast.generate_configurations(conf_param_values, variables)
+        cdds_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        fd_forecast.generate_configurations(conf_param_values, variables)
+        fd_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        hdds_forecast.generate_configurations(conf_param_values, variables)
+        hdds_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        hwdi_forecast.generate_configurations(conf_param_values)
+        hwdi_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        pr_forecast.generate_configurations(conf_param_values, variables)
+        pr_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        r95ptot_forecast.generate_configurations(conf_param_values)
+        r95ptot_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        snwdays_forecast.generate_configurations(conf_param_values)
+        snwdays_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        su30_forecast.generate_configurations(conf_param_values, variables)
+        su30_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        tas_forecast.generate_configurations(conf_param_values, variables)
+        tas_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        tasmax_forecast.generate_configurations(conf_param_values, variables)
+        tasmax_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        tasmin_forecast.generate_configurations(conf_param_values, variables)
+        tasmin_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        tr_forecast.generate_configurations(conf_param_values, variables)
+        tr_forecast.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        cdds_historical.generate_configurations(conf_param_values, variables)
+        cdds_historical.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        fd_historical.generate_configurations(conf_param_values, variables)
+        fd_historical.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        hdds_historical.generate_configurations(conf_param_values, variables)
+        hdds_historical.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        prcptot_historical.generate_configurations(conf_param_values, variables)
+        prcptot_historical.generate_configurations(
+            conf_param_values, clim_indicator_ids
+        )
     )
     coverage_configurations.extend(
-        su30_historical.generate_configurations(conf_param_values, variables)
+        su30_historical.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        tdd_historical.generate_configurations(conf_param_values, variables)
+        tdd_historical.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        tnd_historical.generate_configurations(conf_param_values, variables)
+        tnd_historical.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        tr_historical.generate_configurations(conf_param_values, variables)
+        tr_historical.generate_configurations(conf_param_values, clim_indicator_ids)
     )
     coverage_configurations.extend(
-        txd_historical.generate_configurations(conf_param_values, variables)
+        txd_historical.generate_configurations(conf_param_values, clim_indicator_ids)
     )
 
     for cov_conf_create in coverage_configurations:
